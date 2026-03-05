@@ -627,7 +627,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                     const sttFormats = account.config?.audioFormatPolicy?.sttDirectFormats;
                     log?.info(`[qqbot:${account.accountId}] Voice attachment: ${att.filename}, converting SILK→WAV...`);
                     try {
-                      const wavResult = await convertSilkToWav(localPath, downloadDir, sttFormats);
+                      const wavResult = await convertSilkToWav(localPath, downloadDir);
                       if (wavResult) {
                         audioPath = wavResult.wavPath;
                         log?.info(`[qqbot:${account.accountId}] Voice converted: ${wavResult.wavPath} (${formatDuration(wavResult.duration)})`);

@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { execFile } from "node:child_process";
 import { decode, encode, isSilk } from "silk-wasm";
 
 /**
@@ -351,6 +352,201 @@ export async function audioFileToSilkBase64(filePath: string, directUploadFormat
 
   console.error(`[audio-convert] unsupported format: ${ext} (no ffmpeg available). Install ffmpeg for full format support.`);
   return null;
+}
+
+/**
+ * 等待文件就绪（轮询直到文件出现且大小稳定）
+ * 用于 TTS 生成后等待文件写入完成
+ *
+ * @param filePath 文件路径
+ * @param timeoutMs 最大等待时间（默认 30 秒）
+ * @param pollMs 轮询间隔（默认 500ms）
+ * @returns 文件大小（字节），超时或文件始终为空返回 0
+ */
+export async function waitForFile(filePath: string, timeoutMs: number = 30000, pollMs: number = 500): Promise<number> {
+  const start = Date.now();
+  let lastSize = -1;
+  let stableCount = 0;
+  let fileExists = false;
+  let pollCount = 0;
+
+  while (Date.now() - start < timeoutMs) {
+    pollCount++;
+    try {
+      const stat = fs.statSync(filePath);
+      if (!fileExists) {
+        fileExists = true;
+        console.log(`[audio-convert] waitForFile: file appeared (${stat.size} bytes, after ${Date.now() - start}ms): ${path.basename(filePath)}`);
+      }
+      if (stat.size > 0) {
+        if (stat.size === lastSize) {
+          stableCount++;
+          if (stableCount >= 2) {
+            console.log(`[audio-convert] waitForFile: ready (${stat.size} bytes, waited ${Date.now() - start}ms, polls=${pollCount})`);
+            return stat.size;
+          }
+        } else {
+          stableCount = 0;
+        }
+        lastSize = stat.size;
+      }
+    } catch {
+      // 文件可能还不存在，继续等
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+
+  // 超时后最后检查一次
+  try {
+    const finalStat = fs.statSync(filePath);
+    if (finalStat.size > 0) {
+      console.warn(`[audio-convert] waitForFile: timeout but file has data (${finalStat.size} bytes), using it`);
+      return finalStat.size;
+    }
+    console.error(`[audio-convert] waitForFile: timeout after ${timeoutMs}ms, file exists but empty (0 bytes): ${path.basename(filePath)}`);
+  } catch {
+    console.error(`[audio-convert] waitForFile: timeout after ${timeoutMs}ms, file never appeared: ${path.basename(filePath)}`);
+  }
+  return 0;
+}
+
+// ============ ffmpeg 可用性检测 ============
+
+let _ffmpegAvailable: boolean | null = null;
+
+/**
+ * 检测系统是否安装了 ffmpeg
+ * 结果会缓存，只检测一次
+ */
+function checkFfmpeg(): Promise<boolean> {
+  if (_ffmpegAvailable !== null) return Promise.resolve(_ffmpegAvailable);
+  return new Promise((resolve) => {
+    execFile("ffmpeg", ["-version"], { timeout: 5000 }, (err) => {
+      _ffmpegAvailable = !err;
+      if (_ffmpegAvailable) {
+        console.log("[audio-convert] ffmpeg detected, using ffmpeg for audio decoding");
+      } else {
+        console.warn("[audio-convert] ffmpeg not found, falling back to WASM decoders (limited format support)");
+      }
+      resolve(_ffmpegAvailable);
+    });
+  });
+}
+
+/**
+ * 使用 ffmpeg 将任意音频文件转换为 PCM s16le 单声道 24kHz
+ */
+function ffmpegToPCM(inputPath: string, sampleRate: number = 24000): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const args = [
+      "-i", inputPath,
+      "-f", "s16le",
+      "-ar", String(sampleRate),
+      "-ac", "1",
+      "-acodec", "pcm_s16le",
+      "-v", "error",
+      "pipe:1",
+    ];
+    execFile("ffmpeg", args, {
+      maxBuffer: 50 * 1024 * 1024,
+      encoding: "buffer",
+    }, (err, stdout) => {
+      if (err) {
+        reject(new Error(`ffmpeg failed: ${err.message}`));
+        return;
+      }
+      resolve(stdout as unknown as Buffer);
+    });
+  });
+}
+
+// ============ WASM fallback: MP3 解码 ============
+
+/**
+ * 使用 mpg123-decoder (WASM) 解码 MP3 为 PCM
+ * 仅在 ffmpeg 不可用时作为 fallback
+ */
+async function wasmDecodeMp3ToPCM(buf: Buffer, targetRate: number): Promise<Buffer | null> {
+  try {
+    const { MPEGDecoder } = await import("mpg123-decoder");
+    console.log(`[audio-convert] WASM MP3 decode: size=${buf.length} bytes`);
+    const decoder = new MPEGDecoder();
+    await decoder.ready;
+
+    const decoded = decoder.decode(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength));
+    decoder.free();
+
+    if (decoded.samplesDecoded === 0 || decoded.channelData.length === 0) {
+      console.error(`[audio-convert] WASM MP3 decode: no samples (samplesDecoded=${decoded.samplesDecoded})`);
+      return null;
+    }
+
+    console.log(`[audio-convert] WASM MP3 decode: samples=${decoded.samplesDecoded}, sampleRate=${decoded.sampleRate}, channels=${decoded.channelData.length}`);
+
+    // Float32 多声道混缩为单声道
+    let floatMono: Float32Array;
+    if (decoded.channelData.length === 1) {
+      floatMono = decoded.channelData[0];
+    } else {
+      floatMono = new Float32Array(decoded.samplesDecoded);
+      const channels = decoded.channelData.length;
+      for (let i = 0; i < decoded.samplesDecoded; i++) {
+        let sum = 0;
+        for (let ch = 0; ch < channels; ch++) {
+          sum += decoded.channelData[ch][i];
+        }
+        floatMono[i] = sum / channels;
+      }
+    }
+
+    // Float32 → s16le
+    const s16 = new Uint8Array(floatMono.length * 2);
+    const view = new DataView(s16.buffer);
+    for (let i = 0; i < floatMono.length; i++) {
+      const clamped = Math.max(-1, Math.min(1, floatMono[i]));
+      const val = clamped < 0 ? clamped * 32768 : clamped * 32767;
+      view.setInt16(i * 2, Math.round(val), true);
+    }
+
+    // 简单线性插值重采样
+    let pcm: Uint8Array = s16;
+    if (decoded.sampleRate !== targetRate) {
+      const inputSamples = s16.length / 2;
+      const outputSamples = Math.round(inputSamples * targetRate / decoded.sampleRate);
+      const output = new Uint8Array(outputSamples * 2);
+      const inView = new DataView(s16.buffer, s16.byteOffset, s16.byteLength);
+      const outView = new DataView(output.buffer, output.byteOffset, output.byteLength);
+      for (let i = 0; i < outputSamples; i++) {
+        const srcIdx = i * decoded.sampleRate / targetRate;
+        const idx0 = Math.floor(srcIdx);
+        const idx1 = Math.min(idx0 + 1, inputSamples - 1);
+        const frac = srcIdx - idx0;
+        const s0 = inView.getInt16(idx0 * 2, true);
+        const s1 = inView.getInt16(idx1 * 2, true);
+        const sample = Math.round(s0 + (s1 - s0) * frac);
+        outView.setInt16(i * 2, Math.max(-32768, Math.min(32767, sample)), true);
+      }
+      pcm = output;
+    }
+
+    return Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+  } catch (err) {
+    console.error(`[audio-convert] WASM MP3 decode failed: ${err instanceof Error ? err.message : String(err)}`);
+    if (err instanceof Error && err.stack) {
+      console.error(`[audio-convert] stack: ${err.stack}`);
+    }
+    return null;
+  }
+}
+
+/**
+ * 规范化格式列表（确保以 . 开头，小写）
+ */
+function normalizeFormats(formats: string[]): string[] {
+  return formats.map((f) => {
+    const lower = f.toLowerCase().trim();
+    return lower.startsWith(".") ? lower : `.${lower}`;
+  });
 }
 
 /**
