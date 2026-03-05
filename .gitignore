@@ -1,3 +1,7 @@
 node_modules
 dist
-distnode_modules
+.DS_Store
+.idea/
+.codebuddy/
+.codebuddy.zip
+*.log
