@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { decode, isSilk } from "silk-wasm";
+import { decode, encode, isSilk } from "silk-wasm";
 
 /**
  * 检查文件是否为 SILK 格式（QQ/微信语音常用格式）
@@ -121,7 +121,7 @@ export function isVoiceAttachment(att: { content_type?: string; filename?: strin
     return true;
   }
   const ext = att.filename ? path.extname(att.filename).toLowerCase() : "";
-  return [".amr", ".silk", ".slk"].includes(ext);
+  return [".amr", ".silk", ".slk", ".slac"].includes(ext);
 }
 
 /**
@@ -136,3 +136,290 @@ export function formatDuration(durationMs: number): string {
   const remainSeconds = seconds % 60;
   return remainSeconds > 0 ? `${minutes}分${remainSeconds}秒` : `${minutes}分钟`;
 }
+
+export function isAudioFile(filePath: string): boolean {
+  const ext = path.extname(filePath).toLowerCase();
+  return [".silk", ".slk", ".amr", ".wav", ".mp3", ".ogg", ".opus", ".aac", ".flac", ".m4a", ".wma", ".pcm"].includes(ext);
+}
+
+// ============ TTS（文字转语音）============
+
+export interface TTSConfig {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  voice: string;
+}
+
+export function resolveTTSConfig(cfg: Record<string, unknown>): TTSConfig | null {
+  const c = cfg as any;
+
+  // 优先使用 channels.qqbot.tts（插件专属配置）
+  const channelTts = c?.channels?.qqbot?.tts;
+  if (channelTts && channelTts.enabled !== false) {
+    const providerId: string = channelTts?.provider || "openai";
+    const providerCfg = c?.models?.providers?.[providerId];
+    const baseUrl: string | undefined = channelTts?.baseUrl || providerCfg?.baseUrl;
+    const apiKey: string | undefined = channelTts?.apiKey || providerCfg?.apiKey;
+    const model: string = channelTts?.model || "tts-1";
+    const voice: string = channelTts?.voice || "alloy";
+    if (baseUrl && apiKey) {
+      return { baseUrl: baseUrl.replace(/\/+$/, ""), apiKey, model, voice };
+    }
+  }
+
+  // 回退到 messages.tts（openclaw 框架级 TTS 配置）
+  const msgTts = c?.messages?.tts;
+  if (msgTts && msgTts.auto !== "disabled") {
+    const providerId: string = msgTts?.provider || "openai";
+    const providerBlock = msgTts?.[providerId];  // messages.tts.openai / messages.tts.xxx
+    const providerCfg = c?.models?.providers?.[providerId];
+    const baseUrl: string | undefined = providerBlock?.baseUrl || providerCfg?.baseUrl;
+    const apiKey: string | undefined = providerBlock?.apiKey || providerCfg?.apiKey;
+    const model: string = providerBlock?.model || "tts-1";
+    const voice: string = providerBlock?.voice || "alloy";
+    if (baseUrl && apiKey) {
+      return { baseUrl: baseUrl.replace(/\/+$/, ""), apiKey, model, voice };
+    }
+  }
+
+  return null;
+}
+
+export async function textToSpeechPCM(
+  text: string,
+  ttsCfg: TTSConfig,
+): Promise<{ pcmBuffer: Buffer; sampleRate: number }> {
+  const sampleRate = 24000;
+
+  const resp = await fetch(`${ttsCfg.baseUrl}/audio/speech`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${ttsCfg.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: ttsCfg.model,
+      input: text,
+      voice: ttsCfg.voice,
+      response_format: "pcm",
+      sample_rate: sampleRate,
+      stream: false,
+    }),
+  });
+
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => "");
+    throw new Error(`TTS failed (HTTP ${resp.status}): ${detail.slice(0, 300)}`);
+  }
+
+  const arrayBuffer = await resp.arrayBuffer();
+  return { pcmBuffer: Buffer.from(arrayBuffer), sampleRate };
+}
+
+export async function pcmToSilk(
+  pcmBuffer: Buffer,
+  sampleRate: number,
+): Promise<{ silkBuffer: Buffer; duration: number }> {
+  const pcmData = new Uint8Array(pcmBuffer.buffer, pcmBuffer.byteOffset, pcmBuffer.byteLength);
+  const result = await encode(pcmData, sampleRate);
+  return {
+    silkBuffer: Buffer.from(result.data.buffer, result.data.byteOffset, result.data.byteLength),
+    duration: result.duration,
+  };
+}
+
+export async function textToSilk(
+  text: string,
+  ttsCfg: TTSConfig,
+  outputDir: string,
+): Promise<{ silkPath: string; silkBase64: string; duration: number }> {
+  const { pcmBuffer, sampleRate } = await textToSpeechPCM(text, ttsCfg);
+  const { silkBuffer, duration } = await pcmToSilk(pcmBuffer, sampleRate);
+
+  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+  const silkPath = path.join(outputDir, `tts-${Date.now()}.silk`);
+  fs.writeFileSync(silkPath, silkBuffer);
+
+  return { silkPath, silkBase64: silkBuffer.toString("base64"), duration };
+}
+
+// ============ 核心：任意音频 → SILK Base64 ============
+
+/** QQ Bot API 原生支持上传的音频格式（无需转换为 SILK） */
+const QQ_NATIVE_UPLOAD_FORMATS = [".wav", ".mp3", ".silk"];
+
+/**
+ * 将本地音频文件转换为 QQ Bot 可上传的 Base64
+ *
+ * QQ Bot API 支持直传 WAV、MP3、SILK 三种格式，其他格式仍需转换。
+ * 转换策略（参考 NapCat/go-cqhttp/Discord/Telegram 的做法）：
+ *
+ * 1. WAV / MP3 / SILK → 直传（跳过转换）
+ * 2. 有 ffmpeg → ffmpeg 万能解码为 PCM → silk-wasm 编码
+ *    支持: ogg, opus, aac, flac, wma, m4a, pcm 等所有 ffmpeg 支持的格式
+ * 3. 无 ffmpeg → WASM fallback（仅支持 pcm, wav）
+ *
+ * @param directUploadFormats - 自定义直传格式列表，覆盖默认值。传 undefined 使用 QQ_NATIVE_UPLOAD_FORMATS
+ */
+export async function audioFileToSilkBase64(filePath: string, directUploadFormats?: string[]): Promise<string | null> {
+  if (!fs.existsSync(filePath)) return null;
+
+  const buf = fs.readFileSync(filePath);
+  if (buf.length === 0) {
+    console.error(`[audio-convert] file is empty: ${filePath}`);
+    return null;
+  }
+
+  const ext = path.extname(filePath).toLowerCase();
+
+  // 0. 直传判断：QQ Bot API 原生支持 WAV/MP3/SILK，可通过配置覆盖
+  const uploadFormats = directUploadFormats ? normalizeFormats(directUploadFormats) : QQ_NATIVE_UPLOAD_FORMATS;
+  if (uploadFormats.includes(ext)) {
+    console.log(`[audio-convert] direct upload (QQ native format): ${ext} (${buf.length} bytes)`);
+    return buf.toString("base64");
+  }
+
+  // 1. .slk / .amr 扩展名 → 检测 SILK 魔数，是 SILK 则直传
+  if ([".slk", ".slac"].includes(ext)) {
+    const stripped = stripAmrHeader(buf);
+    const raw = new Uint8Array(stripped.buffer, stripped.byteOffset, stripped.byteLength);
+    if (isSilk(raw)) {
+      console.log(`[audio-convert] SILK file, direct use: ${filePath} (${buf.length} bytes)`);
+      return buf.toString("base64");
+    }
+  }
+
+  // 按文件头检测 SILK（不依赖扩展名）
+  const rawCheck = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  const strippedCheck = stripAmrHeader(buf);
+  const strippedRaw = new Uint8Array(strippedCheck.buffer, strippedCheck.byteOffset, strippedCheck.byteLength);
+  if (isSilk(rawCheck) || isSilk(strippedRaw)) {
+    console.log(`[audio-convert] SILK detected by header: ${filePath} (${buf.length} bytes)`);
+    return buf.toString("base64");
+  }
+
+  const targetRate = 24000;
+
+  // 2. 优先使用 ffmpeg（业界标准做法）
+  const hasFfmpeg = await checkFfmpeg();
+  if (hasFfmpeg) {
+    try {
+      console.log(`[audio-convert] ffmpeg: converting ${ext} (${buf.length} bytes) → PCM s16le ${targetRate}Hz`);
+      const pcmBuf = await ffmpegToPCM(filePath, targetRate);
+      if (pcmBuf.length === 0) {
+        console.error(`[audio-convert] ffmpeg produced empty PCM output`);
+        return null;
+      }
+      const { silkBuffer } = await pcmToSilk(pcmBuf, targetRate);
+      console.log(`[audio-convert] ffmpeg: ${ext} → SILK done (${silkBuffer.length} bytes)`);
+      return silkBuffer.toString("base64");
+    } catch (err) {
+      console.error(`[audio-convert] ffmpeg conversion failed: ${err instanceof Error ? err.message : String(err)}`);
+      // ffmpeg 失败后不 return，继续尝试 WASM fallback
+    }
+  }
+
+  // 3. WASM fallback（无 ffmpeg 时的降级方案）
+  console.log(`[audio-convert] fallback: trying WASM decoders for ${ext}`);
+
+  // 3a. PCM：视为 s16le 24000Hz 单声道
+  if (ext === ".pcm") {
+    const pcmBuf = Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength);
+    const { silkBuffer } = await pcmToSilk(pcmBuf, targetRate);
+    return silkBuffer.toString("base64");
+  }
+
+  // 3b. WAV：手动解析（仅支持标准 PCM WAV）
+  if (ext === ".wav" || (buf.length >= 4 && buf.toString("ascii", 0, 4) === "RIFF")) {
+    const wavInfo = parseWavFallback(buf);
+    if (wavInfo) {
+      const { silkBuffer } = await pcmToSilk(wavInfo, targetRate);
+      return silkBuffer.toString("base64");
+    }
+  }
+
+  // 3c. MP3：WASM 解码
+  if (ext === ".mp3" || ext === ".mpeg") {
+    const pcmBuf = await wasmDecodeMp3ToPCM(buf, targetRate);
+    if (pcmBuf) {
+      const { silkBuffer } = await pcmToSilk(pcmBuf, targetRate);
+      console.log(`[audio-convert] WASM: MP3 → SILK done (${silkBuffer.length} bytes)`);
+      return silkBuffer.toString("base64");
+    }
+  }
+
+  console.error(`[audio-convert] unsupported format: ${ext} (no ffmpeg available). Install ffmpeg for full format support.`);
+  return null;
+}
+
+/**
+ * WAV fallback 解析（无 ffmpeg 时使用）
+ * 仅支持标准 PCM WAV (format=1, 16bit)
+ */
+function parseWavFallback(buf: Buffer): Buffer | null {
+  if (buf.length < 44) return null;
+  if (buf.toString("ascii", 0, 4) !== "RIFF") return null;
+  if (buf.toString("ascii", 8, 12) !== "WAVE") return null;
+  if (buf.toString("ascii", 12, 16) !== "fmt ") return null;
+
+  const audioFormat = buf.readUInt16LE(20);
+  if (audioFormat !== 1) return null;
+
+  const channels = buf.readUInt16LE(22);
+  const sampleRate = buf.readUInt32LE(24);
+  const bitsPerSample = buf.readUInt16LE(34);
+  if (bitsPerSample !== 16) return null;
+
+  // 找 data chunk
+  let offset = 36;
+  while (offset < buf.length - 8) {
+    const chunkId = buf.toString("ascii", offset, offset + 4);
+    const chunkSize = buf.readUInt32LE(offset + 4);
+    if (chunkId === "data") {
+      const dataStart = offset + 8;
+      const dataEnd = Math.min(dataStart + chunkSize, buf.length);
+      let pcm = new Uint8Array(buf.buffer, buf.byteOffset + dataStart, dataEnd - dataStart);
+
+      // 多声道混缩
+      if (channels > 1) {
+        const samplesPerCh = pcm.length / (2 * channels);
+        const mono = new Uint8Array(samplesPerCh * 2);
+        const inV = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+        const outV = new DataView(mono.buffer, mono.byteOffset, mono.byteLength);
+        for (let i = 0; i < samplesPerCh; i++) {
+          let sum = 0;
+          for (let ch = 0; ch < channels; ch++) sum += inV.getInt16((i * channels + ch) * 2, true);
+          outV.setInt16(i * 2, Math.max(-32768, Math.min(32767, Math.round(sum / channels))), true);
+        }
+        pcm = mono;
+      }
+
+      // 简单线性插值重采样
+      const targetRate = 24000;
+      if (sampleRate !== targetRate) {
+        const inSamples = pcm.length / 2;
+        const outSamples = Math.round(inSamples * targetRate / sampleRate);
+        const out = new Uint8Array(outSamples * 2);
+        const inV = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+        const outV = new DataView(out.buffer, out.byteOffset, out.byteLength);
+        for (let i = 0; i < outSamples; i++) {
+          const src = i * sampleRate / targetRate;
+          const i0 = Math.floor(src);
+          const i1 = Math.min(i0 + 1, inSamples - 1);
+          const f = src - i0;
+          const s0 = inV.getInt16(i0 * 2, true);
+          const s1 = inV.getInt16(i1 * 2, true);
+          outV.setInt16(i * 2, Math.max(-32768, Math.min(32767, Math.round(s0 + (s1 - s0) * f))), true);
+        }
+        pcm = out;
+      }
+
+      return Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+    }
+    offset += 8 + chunkSize;
+  }
+
+  return null;
+}
+
