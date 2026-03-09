@@ -158,8 +158,18 @@
 
 ### 第二步 — 安装插件
 
+**方式一：一键安装并启动（推荐）**
+
 ```bash
-# 从源码安装（npm 包即将发布）
+git clone https://github.com/tencent-connect/openclaw-qq.git && cd openclaw-qq
+bash ./scripts/upgrade-and-run.sh --appid YOUR_APPID --secret YOUR_SECRET
+```
+
+脚本会自动完成：清理旧插件 → 安装依赖 → 注册插件 → 配置通道 → 启动服务。完成后可直接跳到[第四步](#第四步--启动并测试)。
+
+**方式二：手动分步安装**
+
+```bash
 git clone https://github.com/tencent-connect/openclaw-qq.git && cd openclaw-qq
 npm install --omit=dev
 openclaw plugins install .

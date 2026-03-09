@@ -1,5 +1,5 @@
 {
-  "name": "@tencent-connect/openclaw-qq",
+  "name": "@tencent-connect/qqbot",
   "version": "1.5.4",
   "type": "module",
   "main": "dist/index.js",
@@ -20,16 +20,19 @@
     "moltbot.plugin.json"
   ],
   "clawdbot": {
+    "id": "qqbot",
     "extensions": [
       "./index.ts"
     ]
   },
   "moltbot": {
+    "id": "qqbot",
     "extensions": [
       "./index.ts"
     ]
   },
   "openclaw": {
+    "id": "qqbot",
     "extensions": [
       "./index.ts"
     ]

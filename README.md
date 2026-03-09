@@ -162,8 +162,18 @@ Scan to join the QQ group chat
 
 ### Step 2 — Install the Plugin
 
+**Option A: One-Click Install & Run (Recommended)**
+
 ```bash
-# From source (npm package coming soon)
+git clone https://github.com/tencent-connect/openclaw-qq.git && cd openclaw-qq
+bash ./scripts/upgrade-and-run.sh --appid YOUR_APPID --secret YOUR_SECRET
+```
+
+The script handles everything: cleanup old plugins → install deps → register plugin → configure channel → start service. Once done, skip to [Step 4](#step-4--start--test).
+
+**Option B: Manual Step-by-Step**
+
+```bash
 git clone https://github.com/tencent-connect/openclaw-qq.git && cd openclaw-qq
 npm install --omit=dev
 openclaw plugins install .
