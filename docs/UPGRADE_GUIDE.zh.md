@@ -9,7 +9,7 @@
 **方式 A：直连下载后执行（无需 clone 仓库）**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/npm-upgrade.sh -o /tmp/upgrade-via-npm.sh
+curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh -o /tmp/upgrade-via-npm.sh
 bash /tmp/upgrade-via-npm.sh
 # 或：bash /tmp/upgrade-via-npm.sh --version <version>
 ```

@@ -161,63 +161,61 @@ AI 通过 `<qqvideo>路径</qqvideo>` 发送视频，支持本地文件和公网
 
 > 详细图文教程请参阅 [官方指南](https://cloud.tencent.com/developer/article/2626045)。
 
-### 第二步 — 安装插件
+### 第二步 — 安装 / 升级插件
 
-**方式一：通过 npm 安装（推荐）**
+**方式一：远程一键执行（最简单，无需 clone 仓库）**
 
 ```bash
-openclaw plugins install @tencent-connect/openclaw-qqbot
+curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh \
+  | bash -s -- --appid YOUR_APPID --secret YOUR_SECRET
 ```
 
-**方式二：一键安装并启动**
+一行命令搞定：下载脚本 → 清理旧插件 → 安装 → 配置通道 → 启动服务。完成后打开 QQ 即可开始聊天！
+
+> 首次安装**必须**传 `--appid` 和 `--secret`。后续升级如已有配置：
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh | bash
+> ```
+
+**方式二：本地脚本（已 clone 仓库时使用）**
 
 ```bash
-git clone https://github.com/tencent-connect/openclaw-qqbot.git && cd openclaw-qqbot
-# 首次安装/首次配置（需要提供 appid 和 secret）
+# 通过 npm 安装
+bash ./scripts/upgrade-via-npm.sh --appid YOUR_APPID --secret YOUR_SECRET
+
+# 或通过源码安装
 bash ./scripts/upgrade-via-source.sh --appid YOUR_APPID --secret YOUR_SECRET
-# 后续升级（已有配置）
-bash ./scripts/upgrade-via-source.sh
 ```
 
-脚本会自动完成：清理旧插件 → 安装依赖 → 注册插件 → 配置通道 → 启动服务。完成后可直接跳到[第四步](#第四步--启动并测试)。
+**常用参数：**
 
-**方式三：手动分步安装**
+| 参数 | 说明 |
+|------|------|
+| `--appid <id> --secret <secret>` | 配置通道（首次安装必填，或更换凭证时使用） |
+| `--version <版本号>` | 安装指定版本（仅 npm 脚本） |
+| `--self-version` | 安装本地 `package.json` 中的版本（仅 npm 脚本） |
+| `-h` / `--help` | 查看完整用法 |
+
+> 也可通过环境变量 `QQBOT_APPID` / `QQBOT_SECRET` 设置。
+
+**方式三：手动安装 / 升级**
 
 ```bash
-git clone https://github.com/tencent-connect/openclaw-qqbot.git && cd openclaw-qqbot
-npm install --omit=dev
-openclaw plugins install .
-```
+# 卸载旧插件（首次安装可跳过）
+openclaw plugins uninstall qqbot
+openclaw plugins uninstall openclaw-qqbot
 
-### 第三步 — 配置 OpenClaw
+# 安装最新版本
+openclaw plugins install @tencent-connect/openclaw-qqbot@latest
 
-**方式一：通过 Wizard 配置（推荐）**
-
-```bash
+# 配置通道（首次安装必做）
 openclaw channels add --channel qqbot --token "AppID:AppSecret"
+
+# 启动 / 重启
+openclaw gateway restart
 ```
 
-**方式二：编辑配置文件**
-
-编辑 `~/.openclaw/openclaw.json`：
-
-```json
-{
-  "channels": {
-    "qqbot": {
-      "enabled": true,
-      "appId": "你的 AppID",
-      "clientSecret": "你的 AppSecret"
-    }
-  }
-}
-```
-
-### 第四步 — 启动与测试
-
-```bash
-openclaw gateway
-```
+### 第三步 — 测试
 
 打开 QQ，找到你的机器人，发条消息试试！
 
@@ -363,100 +361,6 @@ STT 支持两级配置，按优先级查找：
 - `voice` — 语音音色
 - 设置 `enabled: false` 可禁用（默认：`true`）
 - 配置后，AI 可使用 `<qqvoice>` 标签生成并发送语音消息
-
----
-
-## 🔄 升级
-
-如果你之前安装过 qqbot 插件，但不熟悉 `openclaw plugins` 升级命令或 `npm` 操作，建议优先使用项目内置脚本。
-
-### 方式一：推荐（脚本升级）
-
-#### 1) 通过 npm 包升级（最省事，二选一）
-
-**方式 A：直连下载后执行（无需 clone 仓库）**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/npm-upgrade.sh -o /tmp/upgrade-via-npm.sh
-bash /tmp/upgrade-via-npm.sh
-# 或：bash /tmp/upgrade-via-npm.sh --version <version>
-```
-
-**方式 B：在本地仓库内执行脚本**
-
-```bash
-# 升级到 latest
-bash ./scripts/upgrade-via-npm.sh
-
-# 指定版本
-bash ./scripts/upgrade-via-npm.sh --version <version>
-```
-
-> 不传 `--version` 时，默认使用 `latest`。
-
-#### 2) 通过源码一键升级并重启
-
-> 注意：该脚本必须在当前仓库内执行（通过 `openclaw plugins install .` 安装本地源码）。
-
-```bash
-# 已有配置时可直接执行
-bash ./scripts/upgrade-via-source.sh
-
-# 首次安装/首次配置（必须提供 appid 和 secret）
-bash ./scripts/upgrade-via-source.sh --appid your_appid --secret your_secret
-```
-
-> 注意：首次安装必须设置 `appid` 和 `secret`（或设置环境变量 `QQBOT_APPID` / `QQBOT_SECRET`）；后续升级如已有配置可直接执行 `bash ./scripts/upgrade-via-source.sh`。
-
-### 方式二：手动升级（适合熟悉 openclaw / npm 的用户）
-
-#### A. 直接从 npm 安装最新版本
-
-```bash
-# 可选：先卸载旧插件（按实际安装情况执行）
-# 可先执行 `openclaw plugins list` 查看已安装插件 ID
-# 常见历史插件 ID：qqbot / openclaw-qqbot
-# 对应 npm 包：@sliverp/qqbot / @tencent-connect/openclaw-qqbot
-openclaw plugins uninstall qqbot
-openclaw plugins uninstall openclaw-qqbot
-
-# 如果你还安装过其它 qqbot 相关插件，也请一并 uninstall
-# openclaw plugins uninstall <其它插件ID>
-
-# 安装最新版本
-openclaw plugins install @tencent-connect/openclaw-qqbot@latest
-
-# 或安装指定版本
-openclaw plugins install @tencent-connect/openclaw-qqbot@<version>
-```
-
-#### B. 从源码目录安装
-
-```bash
-cd /path/to/openclaw-qqbot
-npm install --omit=dev
-openclaw plugins install .
-```
-
-#### C. 配置通道（首次安装必做）
-
-```bash
-openclaw channels add --channel qqbot --token "appid:appsecret"
-```
-
-#### D. 重启网关
-
-```bash
-openclaw gateway restart
-```
-
-#### E. 验证
-
-```bash
-openclaw plugins list
-openclaw channels list
-openclaw logs --follow
-```
 
 ---
 

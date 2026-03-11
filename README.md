@@ -164,63 +164,61 @@ AI sends videos via `<qqvideo>path</qqvideo>`. Supports local files and URLs. La
 
 > For a step-by-step walkthrough with screenshots, see the [official guide](https://cloud.tencent.com/developer/article/2626045).
 
-### Step 2 — Install the Plugin
+### Step 2 — Install / Upgrade the Plugin
 
-**Option A: Install via npm (Recommended)**
+**Option A: Remote One-Liner (Easiest, no clone required)**
 
 ```bash
-openclaw plugins install @tencent-connect/openclaw-qqbot
+curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh \
+  | bash -s -- --appid YOUR_APPID --secret YOUR_SECRET
 ```
 
-**Option B: One-Click Install & Run**
+One command does it all: download script → cleanup old plugins → install → configure channel → restart service. Once done, open QQ and start chatting!
+
+> `--appid` and `--secret` are **required for first-time install**. For subsequent upgrades:
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh | bash
+> ```
+
+**Option B: Local Script (if you've cloned the repo)**
 
 ```bash
-git clone https://github.com/tencent-connect/openclaw-qqbot.git && cd openclaw-qqbot
-# First-time install/config (appid and secret are required)
+# Via npm
+bash ./scripts/upgrade-via-npm.sh --appid YOUR_APPID --secret YOUR_SECRET
+
+# Or via source
 bash ./scripts/upgrade-via-source.sh --appid YOUR_APPID --secret YOUR_SECRET
-# Subsequent upgrades (existing config)
-bash ./scripts/upgrade-via-source.sh
 ```
 
-The script handles everything: cleanup old plugins → install deps → register plugin → configure channel → start service. Once done, skip to [Step 4](#step-4--start--test).
+**Common flags:**
 
-**Option C: Manual Step-by-Step**
+| Flag | Description |
+|------|-------------|
+| `--appid <id> --secret <secret>` | Configure channel (required for first install, or to change credentials) |
+| `--version <version>` | Install a specific version (npm script only) |
+| `--self-version` | Install the version from local `package.json` (npm script only) |
+| `-h` / `--help` | Show full usage |
+
+> Environment variables `QQBOT_APPID` / `QQBOT_SECRET` are also supported.
+
+**Option C: Manual Install / Upgrade**
 
 ```bash
-git clone https://github.com/tencent-connect/openclaw-qqbot.git && cd openclaw-qqbot
-npm install --omit=dev
-openclaw plugins install .
-```
+# Uninstall old plugins (skip if first install)
+openclaw plugins uninstall qqbot
+openclaw plugins uninstall openclaw-qqbot
 
-### Step 3 — Configure OpenClaw
+# Install latest
+openclaw plugins install @tencent-connect/openclaw-qqbot@latest
 
-**Option 1: CLI Wizard (Recommended)**
-
-```bash
+# Configure channel (first install only)
 openclaw channels add --channel qqbot --token "AppID:AppSecret"
+
+# Start / restart
+openclaw gateway restart
 ```
 
-**Option 2: Edit Config File**
-
-Edit `~/.openclaw/openclaw.json`:
-
-```json
-{
-  "channels": {
-    "qqbot": {
-      "enabled": true,
-      "appId": "Your AppID",
-      "clientSecret": "Your AppSecret"
-    }
-  }
-}
-```
-
-### Step 4 — Start & Test
-
-```bash
-openclaw gateway
-```
+### Step 3 — Test
 
 Open QQ, find your bot, and send a message!
 
@@ -366,100 +364,6 @@ STT supports two-level configuration with priority fallback:
 - `voice` — voice variant
 - Set `enabled: false` to disable (default: `true`)
 - When configured, AI can use `<qqvoice>` tags to generate and send voice messages
-
----
-
-## 🔄 Upgrade
-
-If you previously installed qqbot but are not familiar with `openclaw plugins` commands or npm operations, use the built-in scripts first.
-
-### Option 1: Recommended (Script-based upgrade)
-
-#### 1) Upgrade via npm package (easiest, choose either way)
-
-**Way A — direct download and run (no clone required):**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/npm-upgrade.sh -o /tmp/upgrade-via-npm.sh
-bash /tmp/upgrade-via-npm.sh
-# or: bash /tmp/upgrade-via-npm.sh --version <version>
-```
-
-**Way B — run from local repository:**
-
-```bash
-# Upgrade to latest
-bash ./scripts/upgrade-via-npm.sh
-
-# Upgrade to a specific version
-bash ./scripts/upgrade-via-npm.sh --version <version>
-```
-
-> If `--version` is omitted, `latest` is used by default.
-
-#### 2) One-click upgrade from local source and restart
-
-> Note: this script must be run inside this repository (it installs via `openclaw plugins install .`).
-
-```bash
-# Run directly if you already have config
-bash ./scripts/upgrade-via-source.sh
-
-# First install / first-time config (appid and secret are required)
-bash ./scripts/upgrade-via-source.sh --appid your_appid --secret your_secret
-```
-
-> Note: For first-time installation, you must provide `appid` and `secret` (or set `QQBOT_APPID` / `QQBOT_SECRET`); for subsequent upgrades with existing config, run `bash ./scripts/upgrade-via-source.sh` directly.
-
-### Option 2: Manual upgrade (for users familiar with openclaw / npm)
-
-#### A. Install latest from npm directly
-
-```bash
-# Optional: uninstall old plugins first (based on your actual installation)
-# Run `openclaw plugins list` to check installed plugin IDs
-# Common legacy plugin IDs: qqbot / openclaw-qqbot
-# Corresponding npm packages: @sliverp/qqbot / @tencent-connect/openclaw-qqbot
-openclaw plugins uninstall qqbot
-openclaw plugins uninstall openclaw-qqbot
-
-# If you installed other qqbot-related plugins, uninstall them as well
-# openclaw plugins uninstall <other-plugin-id>
-
-# Install latest
-openclaw plugins install @tencent-connect/openclaw-qqbot@latest
-
-# Or install a specific version
-openclaw plugins install @tencent-connect/openclaw-qqbot@<version>
-```
-
-#### B. Install from source directory
-
-```bash
-cd /path/to/openclaw-qqbot
-npm install --omit=dev
-openclaw plugins install .
-```
-
-#### C. Configure channel (required for first install)
-
-```bash
-openclaw channels add --channel qqbot --token "appid:appsecret"
-```
-
-#### D. Restart gateway
-
-```bash
-openclaw gateway restart
-```
-
-#### E. Verify
-
-```bash
-openclaw plugins list
-openclaw channels list
-openclaw logs --follow
-```
 
 ---
 

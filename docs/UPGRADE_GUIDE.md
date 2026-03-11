@@ -9,7 +9,7 @@ If you previously installed qqbot but are not familiar with `openclaw plugins` c
 **Way A — direct download and run (no clone required):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/npm-upgrade.sh -o /tmp/upgrade-via-npm.sh
+curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/upgrade-via-npm.sh -o /tmp/upgrade-via-npm.sh
 bash /tmp/upgrade-via-npm.sh
 # or: bash /tmp/upgrade-via-npm.sh --version <version>
 ```
