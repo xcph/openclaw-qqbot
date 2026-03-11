@@ -4,7 +4,17 @@
 
 ## 方式一：推荐（脚本升级）
 
-### 1) 通过 npm 包升级（最省事）
+### 1) 通过 npm 包升级（最省事，二选一）
+
+**方式 A：直连下载后执行（无需 clone 仓库）**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/npm-upgrade.sh -o /tmp/upgrade-via-npm.sh
+bash /tmp/upgrade-via-npm.sh
+# 或：bash /tmp/upgrade-via-npm.sh --version <version>
+```
+
+**方式 B：在本地仓库内执行脚本**
 
 ```bash
 # 升级到 latest
@@ -15,14 +25,6 @@ bash ./scripts/upgrade-via-npm.sh --version <version>
 ```
 
 > 不传 `--version` 时，默认使用 `latest`。
-
-> 也可以直接下载并执行该脚本：
->
-> ```bash
-> curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/npm-upgrade.sh -o /tmp/upgrade-via-npm.sh
-> bash /tmp/upgrade-via-npm.sh
-> # 或：bash /tmp/upgrade-via-npm.sh --version <version>
-> ```
 
 ### 2) 通过源码一键升级并重启
 

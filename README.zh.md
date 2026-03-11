@@ -372,7 +372,17 @@ STT 支持两级配置，按优先级查找：
 
 ### 方式一：推荐（脚本升级）
 
-#### 1) 通过 npm 包升级（最省事）
+#### 1) 通过 npm 包升级（最省事，二选一）
+
+**方式 A：直连下载后执行（无需 clone 仓库）**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/npm-upgrade.sh -o /tmp/upgrade-via-npm.sh
+bash /tmp/upgrade-via-npm.sh
+# 或：bash /tmp/upgrade-via-npm.sh --version <version>
+```
+
+**方式 B：在本地仓库内执行脚本**
 
 ```bash
 # 升级到 latest
@@ -383,14 +393,6 @@ bash ./scripts/upgrade-via-npm.sh --version <version>
 ```
 
 > 不传 `--version` 时，默认使用 `latest`。
-
-> 也可以直接下载并执行该脚本：
->
-> ```bash
-> curl -fsSL https://raw.githubusercontent.com/tencent-connect/openclaw-qqbot/main/scripts/npm-upgrade.sh -o /tmp/upgrade-via-npm.sh
-> bash /tmp/upgrade-via-npm.sh
-> # 或：bash /tmp/upgrade-via-npm.sh --version <version>
-> ```
 
 #### 2) 通过源码一键升级并重启
 
@@ -460,6 +462,7 @@ openclaw logs --follow
 
 ## 📚 文档与链接
 
+- [升级指南](docs/UPGRADE_GUIDE.zh.md) — 完整升级路径与迁移说明
 - [命令参考](docs/commands.md) — OpenClaw CLI 常用命令
 - [更新日志](CHANGELOG.md) — 各版本变更记录
 
