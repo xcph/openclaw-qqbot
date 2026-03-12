@@ -4,7 +4,7 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 
-## [Unreleased]
+## [1.5.7] - 2026-03-12
 
 ### 新增
 
