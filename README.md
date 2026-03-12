@@ -6,6 +6,8 @@
 
 # QQ Bot Channel Plugin for OpenClaw
 
+**Latest version: `1.5.7`** — Adds quoted-message context (QQ `REFIDX_*`) with persistent index recovery for more accurate threaded replies.
+
 **Connect your AI assistant to QQ — private chat, group chat, and rich media, all in one plugin.**
 
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
