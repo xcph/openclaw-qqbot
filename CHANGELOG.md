@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.5.7] - 2026-03-12
+
+### Added
+
+- Add quoted-message context pipeline for QQ `REFIDX_*`: parse quote indices from inbound events, cache inbound/outbound message summaries, and inject quote body into agent context.
+- Add persistent quote index store (`~/.openclaw/qqbot/data/ref-index.jsonl`) with in-memory cache + JSONL append, restart recovery, 7-day TTL eviction, and compact.
+- Add structured quote attachment summaries (image/voice/video/file, local path/url, voice transcript source) for better reply grounding.
+
+### Improved
+
+- Bot replies now attach quote reference to the user's current message when available, improving threaded conversation readability in QQ.
+
 ## [1.5.6] - 2026-03-10
 
 ### Added

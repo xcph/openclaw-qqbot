@@ -40,12 +40,23 @@ Scan to join the QQ group chat
 | 🔄 **Hot Reload** | Install via npm with seamless hot updates |
 | 📝 **Markdown** | Full Markdown formatting support |
 | 🛠️ **Commands** | Native OpenClaw command integration |
+| 💬 **Quoted Context** | Resolve QQ `REFIDX_*` quoted messages and inject quote body into AI context |
 
 ---
 
 ## 📸 Feature Showcase
 
 > **Note:** This plugin serves as a **message channel** only — it relays messages between QQ and OpenClaw. Capabilities like image understanding, voice transcription, drawing, etc. depend on the **AI model** you configure and the **skills** installed in OpenClaw, not on this plugin itself.
+
+### 💬 Quoted Message Context (REFIDX)
+
+QQ quote events carry index keys (e.g. `REFIDX_xxx`) instead of full original message body. The plugin now resolves these indices from a local persistent store and injects quote context into AI input, so replies better understand “which message is being quoted”.
+
+- Inbound and outbound messages with `ref_idx` are automatically indexed.
+- Store path: `~/.openclaw/qqbot/data/ref-index.jsonl` (survives gateway restart).
+- Quote body may include text + media summary (image/voice/video/file).
+
+<img width="720" src="docs/images/ref_msg.png" alt="Quoted Message Context Demo" />
 
 ### 🎙️ Voice Messages (STT)
 
