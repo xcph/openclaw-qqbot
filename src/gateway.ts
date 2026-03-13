@@ -1028,33 +1028,12 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             + (asrPreview ? `, asr_preview="${asrPreview}${uniqueVoiceAsrReferTexts[0].length > 50 ? "..." : ""}"` : "")
           );
         }
-        let receivedMediaSection = "";
-        if (imageUrls.length > 0 || uniqueVoicePaths.length > 0 || uniqueVoiceUrls.length > 0) {
-          const mediaSections: string[] = [];
-          if (imageUrls.length > 0) {
-            const imageEntries = imageUrls.map((p, i) => `  - ${p} (${imageMediaTypes[i] || "unknown"})`);
-            mediaSections.push(`- 图片附件:\n${imageEntries.join("\n")}`);
-          }
-          if (uniqueVoicePaths.length > 0 || uniqueVoiceUrls.length > 0) {
-            const voiceEntries = [
-              ...uniqueVoicePaths.map((p) => `  - ${p} (local audio)`),
-              ...uniqueVoiceUrls.map((u) => `  - ${u} (remote audio)`),
-            ];
-            mediaSections.push(`- 语音附件:\n${voiceEntries.join("\n")}`);
-          }
-          receivedMediaSection = `\n${mediaSections.join("\n")}`;
-        }
-
         // AI 看到的投递地址必须带完整前缀（qqbot:c2c: / qqbot:group:）
         const qualifiedTarget = isGroupChat ? `qqbot:group:${event.groupOpenid}` : `qqbot:c2c:${event.senderId}`;
 
         // 动态检测 TTS/STT 配置状态
         const hasTTS = !!resolveTTSConfig(cfg as Record<string, unknown>);
         const hasSTT = !!resolveSTTConfig(cfg as Record<string, unknown>);
-
-        const voiceAsrSection = uniqueVoiceAsrReferTexts.length > 0
-          ? `\n- 语音识别文本:\n${uniqueVoiceAsrReferTexts.map((t, i) => `  ${i + 1}. ${t}`).join("\n")}`
-          : "";
 
         // 引用消息上下文
         let quotePart = "";
@@ -1066,24 +1045,49 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           }
         }
 
-        const contextInfo = `你正在通过 QQ 与用户对话。
+        // ============ 构建 contextInfo（静态/动态分离） ============
+        // 设计原则（参考 Telegram/Discord 做法）：
+        //   - 静态指引：每条消息不变的内容（场景锚定、投递地址、能力说明），
+        //     注入 systemPrompts 前部，session 中虽重复出现但 AI 会自动降权，
+        //     且保证长 session 窗口截断后仍可见。
+        //   - 动态标签：每条消息变化的数据（时间、附件、ASR），
+        //     以紧凑的 [ctx] 块标注在用户消息前，最小化 token 开销。
 
-【会话上下文】
-- 用户: ${event.senderName || "未知"} (${event.senderId})
-- 场景: ${isGroupChat ? "群聊" : "私聊"}${isGroupChat ? ` (群组: ${event.groupOpenid})` : ""}
-- 消息ID: ${event.messageId}
-- 投递目标: ${qualifiedTarget}${receivedMediaSection}${voiceAsrSection}
-- 当前时间戳(ms): ${nowMs}
-- 定时提醒投递地址: channel=qqbot, to=${qualifiedTarget}${hasTTS ? "\n- TTS已启用" : ""}${hasSTT ? "\n- STT已启用" : ""}
+        // --- 静态指引（不随消息变化） ---
+        // to 字段已自描述场景：qqbot:c2c:xxx = 私聊，qqbot:group:xxx = 群聊
+        const staticParts: string[] = [
+          `你正在通过 QQ 与用户对话。`,
+          `- to: ${qualifiedTarget}`,
+          `- 发送媒体: 用 <qqmedia>路径或URL</qqmedia> 嵌入回复`,
+        ];
+        if (hasTTS) staticParts.push(`- TTS: 已启用`);
+        if (hasSTT) staticParts.push(`- STT: 已启用`);
+        const staticInstruction = staticParts.join("\n");
 
-`;
+        // 静态指引作为 systemPrompts 的首项注入（位置固定，语义明确）
+        systemPrompts.unshift(staticInstruction);
+
+        // --- 动态标签（每条消息不同） ---
+        const dynParts: string[] = [
+          `t=${nowMs}`,
+          `from=${event.senderName || "未知"}(${event.senderId})`,
+        ];
+        if (imageUrls.length > 0) {
+          dynParts.push(`img=${imageUrls.join(",")}`);
+        }
+        if (uniqueVoicePaths.length > 0 || uniqueVoiceUrls.length > 0) {
+          dynParts.push(`voice=${[...uniqueVoicePaths, ...uniqueVoiceUrls].join(",")}`);
+        }
+        if (uniqueVoiceAsrReferTexts.length > 0) {
+          dynParts.push(`asr=${uniqueVoiceAsrReferTexts.join("|")}`);
+        }
+        const dynamicCtx = `[ctx ${dynParts.join(" ")}]`;
+
         // 命令直接透传，不注入上下文
         const userMessage = `${quotePart}${userContent}`;
         const agentBody = userContent.startsWith("/")
           ? userContent
-          : systemPrompts.length > 0 
-            ? `${contextInfo}\n\n${systemPrompts.join("\n")}\n\n${userMessage}`
-            : `${contextInfo}\n\n${userMessage}`;
+          : `${systemPrompts.join("\n")}\n\n${dynamicCtx}\n${userMessage}`;
         
         log?.info(`[qqbot:${account.accountId}] agentBody length: ${agentBody.length}`);
 

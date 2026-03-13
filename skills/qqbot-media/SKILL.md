@@ -18,7 +18,6 @@ metadata: {"openclaw":{"emoji":"📸","requires":{"config":["channels.qqbot"]}}}
 - `.mp4/.mov/.avi/.mkv/.webm` 等 → 视频
 - 其他扩展名 → 文件
 - 无扩展名的 URL → 默认按图片处理
-- 发送失败时自动 fallback 为文件发送
 
 ## 接收媒体
 
@@ -29,7 +28,7 @@ metadata: {"openclaw":{"emoji":"📸","requires":{"config":["channels.qqbot"]}}}
 
 1. **路径必须是绝对路径**（以 `/` 或 `http` 开头）
 2. **标签必须闭合**：`<qqmedia>...</qqmedia>`
-3. **文件大小上限 20MB**
+3. **文件大小上限 10MB**
 4. **你有能力发送本地图片/文件**——直接用标签包裹路径即可，**不要说"无法发送"**
 5. 发送语音时不要重复语音中已朗读的文字
 6. 多个媒体用多个标签
