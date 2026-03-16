@@ -18,6 +18,7 @@ import { promisify } from "node:util";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import { getUpdateInfo, formatUpdateNotice } from "./update-checker.js";
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
 
@@ -118,7 +119,13 @@ registerCommand({
   name: "version",
   description: "插件版本号",
   handler: () => {
-    return `QQBot Plugin v${PLUGIN_VERSION}`;
+    const lines = [`QQBot Plugin v${PLUGIN_VERSION}`];
+    const info = getUpdateInfo();
+    const notice = formatUpdateNotice(info);
+    if (notice) {
+      lines.push("", notice);
+    }
+    return lines.join("\n");
   },
 });
 
@@ -135,6 +142,12 @@ registerCommand({
       lines.push(`- \`/${name}\` — ${cmd.description}`);
     }
     lines.push(``, `**升级指引**: ${url}`);
+    // 如有更新可用，追加提示
+    const info = getUpdateInfo();
+    const notice = formatUpdateNotice(info);
+    if (notice) {
+      lines.push("", notice);
+    }
     return lines.join("\n");
   },
 });

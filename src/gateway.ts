@@ -8,6 +8,7 @@ import { recordKnownUser, flushKnownUsers, listKnownUsers } from "./known-users.
 import { getQQBotRuntime } from "./runtime.js";
 import { setRefIndex, getRefIndex, formatRefEntryForAgent, flushRefIndex, type RefAttachmentSummary } from "./ref-index-store.js";
 import { matchSlashCommand, getPluginVersion, type SlashCommandContext, type QueueSnapshot } from "./slash-commands.js";
+import { triggerUpdateCheck } from "./update-checker.js";
 import { startImageServer, isImageServerRunning, downloadFile, type ImageServerConfig } from "./image-server.js";
 import { getImageSize, formatQQBotMarkdownImage, hasQQBotImageSize, DEFAULT_IMAGE_SIZE } from "./utils/image-size.js";
 import { parseQQBotPayload, encodePayloadForCron, isCronReminderPayload, isMediaPayload, type CronReminderPayload, type MediaPayload } from "./utils/payload.js";
@@ -362,6 +363,9 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
     }
   }
 
+  // 后台版本检查（detached 子进程，零阻塞）
+  triggerUpdateCheck(log);
+
   // 初始化 API 配置（markdown 支持）
   initApiConfig({
     markdownSupport: account.markdownSupport,
@@ -436,6 +440,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
   let isConnecting = false; // 防止并发连接
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null; // 重连定时器
   let shouldRefreshToken = false; // 下次连接是否需要刷新 token
+  let isFirstReady = true; // 仅 startGateway 后首次 READY 才发送上线通知
 
   // ============ P1-2: 尝试从持久化存储恢复 Session ============
   // 传入当前 appId，如果 appId 已变更（换了机器人），旧 session 自动失效
@@ -1061,7 +1066,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         ];
         // TTS 能力声明：仅在启用时告知 AI 可以发语音（与 qqbot-media SKILL.md 互补）
         // STT 无需声明：转写结果已在动态上下文的 ASR 行中，AI 自然可见
-        if (hasTTS) staticParts.push("语音合成已启用，可用<qqmedia>发送语音");
+        if (hasTTS) staticParts.push("语音合成已启用，发送媒体格式：<qqmedia>路径</qqmedia>");
         const staticInstruction = staticParts.join(" | ");
 
         // 静态指引作为 systemPrompts 的首项注入
@@ -2348,7 +2353,12 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                 });
                 onReady?.(d);
 
-                // 启动成功后向已知用户发送上线通知（异步，不阻塞主流程）
+                // 仅 startGateway 后的首次 READY 才发送上线通知
+                // ws 断线重连（resume 失败后重新 Identify）产生的 READY 不发送
+                if (!isFirstReady) {
+                  log?.info(`[qqbot:${account.accountId}] Skipping startup greeting (reconnect READY, not first startup)`);
+                } else {
+                isFirstReady = false;
                 (async () => {
                   try {
                     const greeting = `Haha，我的'灵魂'已上线，随时等你吩咐。`;
@@ -2384,6 +2394,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                     log?.error(`[qqbot:${account.accountId}] Failed to send startup greetings: ${err}`);
                   }
                 })();
+                } // end isFirstReady
               } else if (t === "RESUMED") {
                 log?.info(`[qqbot:${account.accountId}] Session resumed`);
                 // P1-2: 更新 Session 连接时间

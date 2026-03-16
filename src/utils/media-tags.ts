@@ -62,6 +62,26 @@ ALL_TAG_NAMES.sort((a, b) => b.length - a.length);
 const TAG_NAME_PATTERN = ALL_TAG_NAMES.join("|");
 
 /**
+ * 自闭合属性语法的正则：
+ *   <qqmedia file="/path/to/file.png" />
+ *   <qqimg src="/path" />
+ *   <image file="..." />
+ * 支持 file= / src= / path= / url= 属性名，引号可选
+ */
+const SELF_CLOSING_TAG_REGEX = new RegExp(
+  "`?" +
+  "[<＜<]\\s*(" + TAG_NAME_PATTERN + ")" +
+  "\\s+(?:file|src|path|url)\\s*=\\s*" +
+  "[\"']?" +
+  "([^\"'/>＞>]+?)" +
+  "[\"']?" +
+  "\\s*/?" +
+  "\\s*[>＞>]" +
+  "`?",
+  "gi"
+);
+
+/**
  * 构建一个宽容的正则，能匹配各种畸形标签写法：
  *
  * 常见错误模式：
@@ -73,6 +93,7 @@ const TAG_NAME_PATTERN = ALL_TAG_NAMES.join("|");
  *  6. 中文尖括号：＜qqimg＞url＜/qqimg＞ 或 <qqimg>url</qqimg>
  *  7. 多余引号包裹路径：<qqimg>"path"</qqimg>
  *  8. Markdown 代码块包裹：`<qqimg>path</qqimg>`
+ *  9. 自闭合属性语法：<qqmedia file="/path" /> (由 SELF_CLOSING_TAG_REGEX 处理)
  */
 const FUZZY_MEDIA_TAG_REGEX = new RegExp(
   // 可选 Markdown 行内代码反引号
@@ -127,12 +148,23 @@ const MULTILINE_TAG_CLEANUP = new RegExp(
  * @returns 修正后的文本（如果没有匹配到任何标签则原样返回）
  */
 export function normalizeMediaTags(text: string): string {
-  // 先将标签内部的换行/回车/制表符压缩为空格
-  let cleaned = text.replace(MULTILINE_TAG_CLEANUP, (_m, open: string, body: string, close: string) => {
+  // 第 0 步：将自闭合属性语法转换为标准包裹语法
+  // <qqmedia file="/path/to/file.png" /> → <qqmedia>/path/to/file.png</qqmedia>
+  let cleaned = text.replace(SELF_CLOSING_TAG_REGEX, (_match, rawTag: string, content: string) => {
+    const tag = resolveTagName(rawTag);
+    const trimmed = content.trim();
+    if (!trimmed) return _match;
+    const expanded = expandTilde(trimmed);
+    return `<${tag}>${expanded}</${tag}>`;
+  });
+
+  // 第 1 步：将标签内部的换行/回车/制表符压缩为空格
+  cleaned = cleaned.replace(MULTILINE_TAG_CLEANUP, (_m, open: string, body: string, close: string) => {
     const flat = body.replace(/[\r\n\t]+/g, " ").replace(/ {2,}/g, " ");
     return open + flat + close;
   });
 
+  // 第 2 步：将各种畸形标签统一为标准格式
   return cleaned.replace(FUZZY_MEDIA_TAG_REGEX, (_match, rawTag: string, content: string) => {
     const tag = resolveTagName(rawTag);
     const trimmed = content.trim();
