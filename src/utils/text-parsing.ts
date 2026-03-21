@@ -32,6 +32,8 @@ export function filterInternalMarkers(text: string): string {
   if (!text) return text;
   
   let result = text.replace(/\[\[[a-z_]+:\s*[^\]]*\]\]/gi, "");
+  // 过滤框架内部图片引用标记：@image:image_xxx.png、@voice:voice_xxx.silk 等
+  result = result.replace(/@(?:image|voice|video|file):[a-zA-Z0-9_.-]+/g, "");
   result = result.replace(/\n{3,}/g, "\n\n").trim();
   
   return result;

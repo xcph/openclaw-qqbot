@@ -13,7 +13,7 @@
 
 import type { QQBotAccountConfig } from "./types.js";
 import { createRequire } from "node:module";
-import { execFileSync, execFile } from "node:child_process";
+import { execFileSync, execFile, spawn } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
 import { getUpdateInfo, checkVersionExists } from "./update-checker.js";
@@ -375,8 +375,10 @@ function findCli(): string | null {
   const whichCmd = isWindows() ? "where" : "which";
   for (const cli of ["openclaw", "clawdbot", "moltbot"]) {
     try {
-      execFileSync(whichCmd, [cli], { timeout: 3000, encoding: "utf8", stdio: "pipe" });
-      return cli;
+      const out = execFileSync(whichCmd, [cli], { timeout: 3000, encoding: "utf8", stdio: "pipe" }).trim();
+      // where 在 Windows 上可能返回多行（多个匹配），取第一行
+      const resolved = out.split(/\r?\n/)[0]?.trim();
+      return resolved || cli;
     } catch {
       continue;
     }
@@ -703,6 +705,8 @@ function fireHotUpgrade(targetVersion?: string): HotUpgradeStartResult {
     shellArgs = [scriptPath, "--no-restart", ...(targetVersion ? ["--version", targetVersion] : [])];
   }
 
+  console.log(`[qqbot] fireHotUpgrade: shell=${shell}, script=${scriptPath}, cli=${cli}, target=${targetVersion || "latest"}`);
+
   // 异步执行升级脚本
   execFile(shell, shellArgs, {
     timeout: 120_000,
@@ -710,32 +714,78 @@ function fireHotUpgrade(targetVersion?: string): HotUpgradeStartResult {
     ...(isWindows() ? { windowsHide: true } : {}),
   }, (error, stdout, _stderr) => {
     if (error) {
+      console.error(`[qqbot] fireHotUpgrade: script failed: ${error.message}`);
+      if (stdout) console.error(`[qqbot] fireHotUpgrade: stdout: ${stdout.slice(0, 2000)}`);
+      if (_stderr) console.error(`[qqbot] fireHotUpgrade: stderr: ${_stderr.slice(0, 2000)}`);
+      _upgrading = false;
       return;
     }
+
+    console.log(`[qqbot] fireHotUpgrade: script completed, stdout length=${stdout.length}`);
 
     // 从脚本输出中提取版本号，验证文件替换是否成功
     const versionMatch = stdout.match(/QQBOT_NEW_VERSION=(\S+)/);
     const newVersion = versionMatch?.[1];
     if (newVersion === "unknown") {
-      // 文件替换异常，不执行 restart 以保持现有服务
+      console.error(`[qqbot] fireHotUpgrade: script output QQBOT_NEW_VERSION=unknown, aborting restart`);
+      _upgrading = false;
       return;
     }
+
+    console.log(`[qqbot] fireHotUpgrade: new version=${newVersion || "(not detected)"}, triggering restart...`);
 
     // 文件替换成功，在 restart 之前把 source 从 path 切换为 npm，
     // 确保新进程启动时读到的是 npm source，不会被本地源码覆盖。
     switchPluginSourceToNpm();
 
-    // 文件替换成功，立即触发 gateway restart
-    execCliAsync(cli, ["gateway", "restart"], { timeout: 30_000 }, (restartErr) => {
-      if (restartErr) {
-        // restart 失败，尝试 stop + start 作为 fallback
-        execCliAsync(cli, ["gateway", "stop"], { timeout: 10_000 }, () => {
-          setTimeout(() => {
-            execCliAsync(cli, ["gateway", "start"], { timeout: 30_000 }, () => {});
-          }, 1000);
+    if (isWindows()) {
+      // Windows: 启动一个分离的 PowerShell 进程来执行 stop → 等待 → start
+      // 这样当前 Node 进程被 stop 杀掉后，PowerShell 进程仍能继续执行 start
+      // 使用 PowerShell 而非 bat，因为 cli 可能是 .mjs 文件需要通过 node 调用
+      const cliInvoke = cli.endsWith(".mjs")
+        ? `& '${process.execPath}' '${cli}'`
+        : `& '${cli}'`;
+      const ps1Content = [
+        `Write-Host '[qqbot-upgrade] Stopping gateway...'`,
+        `${cliInvoke} gateway stop`,
+        `Write-Host '[qqbot-upgrade] Waiting for process to exit...'`,
+        `Start-Sleep -Seconds 3`,
+        `Write-Host '[qqbot-upgrade] Starting gateway...'`,
+        `${cliInvoke} gateway start`,
+        `Write-Host '[qqbot-upgrade] Done.'`,
+        `Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue`,
+      ].join("\r\n");
+      const ps1Path = path.join(getHomeDir(), ".openclaw", ".qqbot-restart.ps1");
+      const ps = findPowerShell();
+      try {
+        fs.writeFileSync(ps1Path, ps1Content, "utf8");
+        // spawn with detached:true + stdio:"ignore" → 真正的独立进程，不受父进程树终止影响
+        const child = spawn(ps || "powershell", [
+          "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", ps1Path,
+        ], {
+          detached: true,
+          stdio: "ignore",
+          windowsHide: true,
         });
+        child.unref();
+        console.log(`[qqbot] fireHotUpgrade: launched detached restart script (pid=${child.pid}): ${ps1Path}`);
+      } catch (psErr: any) {
+        console.error(`[qqbot] fireHotUpgrade: failed to launch ps1 restart: ${psErr.message}, falling back to direct restart`);
+        execCliAsync(cli, ["gateway", "restart"], { timeout: 30_000 }, () => {});
       }
-    });
+    } else {
+      // Mac/Linux: 直接 restart（框架通常以 daemon 模式运行）
+      execCliAsync(cli, ["gateway", "restart"], { timeout: 30_000 }, (restartErr) => {
+        if (restartErr) {
+          console.error(`[qqbot] fireHotUpgrade: restart failed: ${restartErr.message}, trying stop+start fallback`);
+          execCliAsync(cli, ["gateway", "stop"], { timeout: 10_000 }, () => {
+            setTimeout(() => {
+              execCliAsync(cli, ["gateway", "start"], { timeout: 30_000 }, () => {});
+            }, 1000);
+          });
+        }
+      });
+    }
   });
 
   return { ok: true };

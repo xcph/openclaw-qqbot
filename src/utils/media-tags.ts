@@ -66,15 +66,21 @@ const TAG_NAME_PATTERN = ALL_TAG_NAMES.join("|");
  *   <qqmedia file="/path/to/file.png" />
  *   <qqimg src="/path" />
  *   <image file="..." />
+ *   <qqmedia type="file" path="/path/to/file.zip" />   ← 多属性
  * 支持 file= / src= / path= / url= 属性名，引号可选
+ * 也支持前面有其他属性（如 type="file"）的多属性写法
  */
 const SELF_CLOSING_TAG_REGEX = new RegExp(
   "`?" +
   "[<＜<]\\s*(" + TAG_NAME_PATTERN + ")" +
+  // 允许前面有任意其他属性（如 type="file"），非贪婪跳过
+  "(?:\\s+(?!file|src|path|url)[a-z_-]+\\s*=\\s*[\"']?[^\"'/>＞>]*?[\"']?)*" +
   "\\s+(?:file|src|path|url)\\s*=\\s*" +
   "[\"']?" +
   "([^\"'/>＞>]+?)" +
   "[\"']?" +
+  // 允许后面还有其他属性
+  "(?:\\s+[a-z_-]+\\s*=\\s*[\"']?[^\"'/>＞>]*?[\"']?)*" +
   "\\s*/?" +
   "\\s*[>＞>]" +
   "`?",

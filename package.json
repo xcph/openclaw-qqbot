@@ -1,6 +1,6 @@
 {
   "name": "@tencent-connect/openclaw-qqbot",
-  "version": "1.6.4-alpha.24",
+  "version": "1.6.4-alpha.44",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
