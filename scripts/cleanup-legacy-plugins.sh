@@ -50,12 +50,9 @@ cleanup_installation() {
       const ids = ['qqbot', 'openclaw-qq', '@sliverp/qqbot', '@tencent-connect/qqbot', '@tencent-connect/openclaw-qq', '@tencent-connect/openclaw-qqbot', 'openclaw-qqbot'];
       
       for (const id of ids) {
-        // 删除 channels.<id>
-        if (config.channels && config.channels[id]) {
-          delete config.channels[id];
-          console.log('  - 已删除 channels.' + id);
-        }
-        
+        // 注意: 不删除 channels.<id>，因为里面保存了用户的 appid/secret 凭证
+        // 凭证与插件版本无关，清理插件时不应清除凭证
+
         // 删除 plugins.entries.<id>
         if (config.plugins && config.plugins.entries && config.plugins.entries[id]) {
           delete config.plugins.entries[id];

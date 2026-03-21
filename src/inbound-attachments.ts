@@ -8,7 +8,7 @@
 import { downloadFile } from "./image-server.js";
 import { convertSilkToWav, isVoiceAttachment, formatDuration } from "./utils/audio-convert.js";
 import { transcribeAudio, resolveSTTConfig } from "./stt.js";
-import { getQQBotDataDir } from "./utils/platform.js";
+import { getQQBotMediaDir } from "./utils/platform.js";
 
 // ============ 类型定义 ============
 
@@ -85,7 +85,7 @@ export async function processAttachments(
   if (!attachments?.length) return EMPTY_RESULT;
 
   const { accountId, cfg, log } = ctx;
-  const downloadDir = getQQBotDataDir("downloads");
+  const downloadDir = getQQBotMediaDir("downloads");
   const prefix = `[qqbot:${accountId}]`;
 
   // 结果收集

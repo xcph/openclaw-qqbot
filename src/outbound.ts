@@ -24,7 +24,7 @@ import {
 import { isAudioFile, audioFileToSilkBase64, waitForFile, shouldTranscodeVoice } from "./utils/audio-convert.js";
 import { normalizeMediaTags } from "./utils/media-tags.js";
 import { checkFileSize, readFileAsync, fileExistsAsync, isLargeFile, formatFileSize } from "./utils/file-utils.js";
-import { isLocalPath as isLocalFilePath, normalizePath, sanitizeFileName, getQQBotDataDir } from "./utils/platform.js";
+import { isLocalPath as isLocalFilePath, normalizePath, sanitizeFileName, getQQBotDataDir, getQQBotMediaDir } from "./utils/platform.js";
 import { downloadFile } from "./image-server.js";
 
 // ============ 消息回复限流器 ============
@@ -378,7 +378,7 @@ async function downloadAndRetrySendPhoto(
   prefix: string,
 ): Promise<OutboundResult | null> {
   try {
-    const downloadDir = getQQBotDataDir("downloads", "url-fallback");
+    const downloadDir = getQQBotMediaDir("downloads", "url-fallback");
     const localFile = await downloadFile(httpUrl, downloadDir);
     if (!localFile) {
       console.error(`${prefix} sendPhoto fallback: download also failed for ${httpUrl.slice(0, 80)}`);
@@ -702,7 +702,7 @@ async function sendDocumentFromLocal(ctx: MediaTargetContext, mediaPath: string,
  */
 async function downloadToFallbackDir(httpUrl: string, prefix: string, caller: string): Promise<string | null> {
   try {
-    const downloadDir = getQQBotDataDir("downloads", "url-fallback");
+    const downloadDir = getQQBotMediaDir("downloads", "url-fallback");
     const localFile = await downloadFile(httpUrl, downloadDir);
     if (!localFile) {
       console.error(`${prefix} ${caller} fallback: download also failed for ${httpUrl.slice(0, 80)}`);
