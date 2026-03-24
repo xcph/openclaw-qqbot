@@ -20,6 +20,8 @@ import { sendStartupGreetings, type AdminResolverContext } from "./admin-resolve
 import { sendWithTokenRetry, sendErrorToTarget, handleStructuredPayload, type ReplyContext, type MessageTarget } from "./reply-dispatcher.js";
 import { TypingKeepAlive, TYPING_INPUT_SECOND } from "./typing-keepalive.js";
 import { parseAndSendMediaTags, sendPlainReply, type DeliverEventContext, type DeliverAccountContext } from "./outbound-deliver.js";
+import { createDeliverDebouncer, type DeliverDebouncer } from "./deliver-debounce.js";
+import { runWithRequestContext } from "./request-context.js";
 
 // QQ Bot intents - 按权限级别分组
 const INTENTS = {
@@ -86,9 +88,10 @@ async function ensureImageServer(log?: GatewayContext["log"], publicBaseUrl?: st
   }
 }
 
-// 模块级变量：进程生命周期内只有首次为 true
+// 模块级变量：per-account 首次 READY 跟踪
 // 区分 gateway restart（进程重启）和 health-monitor 断线重连
-let isFirstReadyGlobal = true;
+// 每个 account 首次 READY/RESUMED 时从 Set 中移除，之后不再发送问候语
+const _pendingFirstReady = new Set<string>();
 
 /**
  * 启动 Gateway WebSocket 连接（带自动重连）
@@ -107,6 +110,21 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
     for (const w of diag.warnings) {
       log?.info(`[qqbot:${account.accountId}] ${w}`);
     }
+  }
+
+  // 预检 openclaw runtime 模块是否可正常解析（兼容性诊断）
+  // openclaw 3.23+ 存在 plugin-sdk/root-alias.cjs 回归 bug，
+  // 内置插件（qwen-portal-auth 等）全部加载失败，导致 AI agent 调用返回
+  // "Unable to resolve plugin runtime module"。提前检测并告警。
+  try {
+    const pluginRuntime = getQQBotRuntime();
+    if (pluginRuntime?.channel?.reply?.dispatchReplyWithBufferedBlockDispatcher) {
+      log?.info(`[qqbot:${account.accountId}] Runtime module preflight: OK`);
+    } else {
+      log?.error(`[qqbot:${account.accountId}] ⚠️ Runtime preflight: dispatchReply API 不可用，AI 消息处理可能失败。请检查 openclaw 版本兼容性`);
+    }
+  } catch (preflightErr) {
+    log?.error(`[qqbot:${account.accountId}] ⚠️ Runtime preflight failed: ${preflightErr}. AI 消息处理可能失败`);
   }
 
   // 后台版本检查（供 /bot-version、/bot-upgrade 指令被动查询）
@@ -186,8 +204,8 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
   let isConnecting = false; // 防止并发连接
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null; // 重连定时器
   let shouldRefreshToken = false; // 下次连接是否需要刷新 token
-  // 使用模块级 isFirstReadyGlobal，确保只有进程级重启才发送问候语
-  // health-monitor 重连不会重新初始化为 true
+  // 标记此 account 为待发问候（进程重启时 Set 里已有，断线重连不会重新加入）
+  _pendingFirstReady.add(account.accountId);
 
   const adminCtx: AdminResolverContext = { accountId: account.accountId, appId: account.appId, clientSecret: account.clientSecret, log };
 
@@ -621,7 +639,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
         // ============ 构建 contextInfo（静态/动态分离） ============
         // 设计原则（参考 Telegram/Discord 做法）：
-        //   - 静态指引：每条消息不变的内容（场景锚定、投递地址、能力说明），
+        //   - 静态指引：每条消息不变的能力声明，
         //     注入 systemPrompts 前部，session 中虽重复出现但 AI 会自动降权，
         //     且保证长 session 窗口截断后仍可见。
         //   - 动态标签：每条消息变化的数据（时间、附件、ASR），
@@ -629,17 +647,17 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
         // --- 静态指引（仅注入框架信封未覆盖的 QQBot 特有信息） ---
         // 框架 formatInboundEnvelope 已提供：平台标识、发送者、时间戳
-        // 这里只补充 QQBot 独有的：投递地址（cron skill 需要）
-        const staticParts: string[] = [
-          `[QQBot] to=${qualifiedTarget}`,
-        ];
+        // 投递地址通过 AsyncLocalStorage 请求上下文传递给 remind 工具，无需在 agentBody 中暴露
+        const staticParts: string[] = [];
         // TTS 能力声明：仅在启用时告知 AI 可以发语音（媒体标签用法由 qqbot-media SKILL.md 提供）
         // STT 无需声明：转写结果已在动态上下文的 ASR 行中，AI 自然可见
         if (hasTTS) staticParts.push("语音合成已启用");
-        const staticInstruction = staticParts.join(" | ");
 
-        // 静态指引作为 systemPrompts 的首项注入
-        systemPrompts.unshift(staticInstruction);
+        // 仅在有静态指引时注入 systemPrompts
+        if (staticParts.length > 0) {
+          const staticInstruction = staticParts.join(" | ");
+          systemPrompts.unshift(staticInstruction);
+        }
 
         // --- 动态上下文（仅框架信封未覆盖的附件信息） ---
         const dynLines: string[] = [];
@@ -757,6 +775,9 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         // 发送错误提示的辅助函数
         const sendErrorMessage = (errorText: string) => sendErrorToTarget(replyCtx, errorText);
 
+        // 使用 AsyncLocalStorage 建立请求级上下文，作用域内所有异步代码
+        // （包括 AI agent 调用、tool execute）都能安全获取当前会话信息，无并发竞态。
+        await runWithRequestContext({ target: qualifiedTarget }, async () => {
         try {
           const messagesConfig = pluginRuntime.channel.reply.resolveEffectiveMessagesConfig(cfg, route.agentId);
 
@@ -773,6 +794,10 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           let toolRenewalCount = 0; // 已续期次数
           let timeoutId: ReturnType<typeof setTimeout> | null = null;
           let toolOnlyTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
+          // ============ Deliver Debouncer：合并短时间内连续到达的 block deliver ============
+          const debounceConfig = account.config?.deliverDebounce;
+          let debouncer: DeliverDebouncer | null = null as DeliverDebouncer | null;
 
           // tool-only 兜底：转发工具产生的实际内容（媒体/文本），而非生硬的提示语
           const sendToolFallback = async (): Promise<void> => {
@@ -924,63 +949,82 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   log?.info(`[qqbot:${account.accountId}] Block deliver after ${toolDeliverCount} tool deliver(s)`);
                 }
 
-                // ============ 引用回复 ============
-                const quoteRef = event.msgIdx;
-                let quoteRefUsed = false;
-                const consumeQuoteRef = (): string | undefined => {
-                  if (quoteRef && !quoteRefUsed) {
-                    quoteRefUsed = true;
-                    return quoteRef;
+                // ============ 实际发送逻辑（可被 debouncer 包裹） ============
+                const executeDeliver = async (deliverPayload: { text?: string; mediaUrls?: string[]; mediaUrl?: string }, _deliverInfo: { kind: string }) => {
+                  // ============ 引用回复 ============
+                  const quoteRef = event.msgIdx;
+                  let quoteRefUsed = false;
+                  const consumeQuoteRef = (): string | undefined => {
+                    if (quoteRef && !quoteRefUsed) {
+                      quoteRefUsed = true;
+                      return quoteRef;
+                    }
+                    return undefined;
+                  };
+
+                  let replyText = deliverPayload.text ?? "";
+
+                  // ============ 媒体标签解析 + 发送 ============
+                  const deliverEvent: DeliverEventContext = {
+                    type: event.type,
+                    senderId: event.senderId,
+                    messageId: event.messageId,
+                    channelId: event.channelId,
+                    groupOpenid: event.groupOpenid,
+                    msgIdx: event.msgIdx,
+                  };
+                  const deliverActx: DeliverAccountContext = { account, qualifiedTarget, log };
+
+                  const mediaResult = await parseAndSendMediaTags(
+                    replyText, deliverEvent, deliverActx, sendWithRetry, consumeQuoteRef,
+                  );
+                  if (mediaResult.handled) {
+                    pluginRuntime.channel.activity.record({
+                      channel: "qqbot",
+                      accountId: account.accountId,
+                      direction: "outbound",
+                    });
+                    return;
                   }
-                  return undefined;
-                };
+                  replyText = mediaResult.normalizedText;
 
-                let replyText = payload.text ?? "";
+                  // ============ 结构化载荷检测与分发 ============
+                  const recordOutboundActivity = () => pluginRuntime.channel.activity.record({
+                    channel: "qqbot",
+                    accountId: account.accountId,
+                    direction: "outbound",
+                  });
+                  const handled = await handleStructuredPayload(replyCtx, replyText, recordOutboundActivity);
+                  if (handled) return;
 
-                // ============ 媒体标签解析 + 发送 ============
-                const deliverEvent: DeliverEventContext = {
-                  type: event.type,
-                  senderId: event.senderId,
-                  messageId: event.messageId,
-                  channelId: event.channelId,
-                  groupOpenid: event.groupOpenid,
-                  msgIdx: event.msgIdx,
-                };
-                const deliverActx: DeliverAccountContext = { account, qualifiedTarget, log };
+                  // ============ 非结构化消息发送 ============
+                  await sendPlainReply(
+                    deliverPayload, replyText, deliverEvent, deliverActx,
+                    sendWithRetry, consumeQuoteRef, toolMediaUrls,
+                  );
 
-                const mediaResult = await parseAndSendMediaTags(
-                  replyText, deliverEvent, deliverActx, sendWithRetry, consumeQuoteRef,
-                );
-                if (mediaResult.handled) {
                   pluginRuntime.channel.activity.record({
                     channel: "qqbot",
                     accountId: account.accountId,
                     direction: "outbound",
                   });
-                  return;
+                };
+
+                // ============ Debounce 合并回复 ============
+                if (!debouncer) {
+                  debouncer = createDeliverDebouncer(
+                    debounceConfig,
+                    executeDeliver,
+                    log,
+                    `[qqbot:${account.accountId}:debounce]`,
+                  );
                 }
-                replyText = mediaResult.normalizedText;
 
-                // ============ 结构化载荷检测与分发 ============
-                const recordOutboundActivity = () => pluginRuntime.channel.activity.record({
-                  channel: "qqbot",
-                  accountId: account.accountId,
-                  direction: "outbound",
-                });
-                const handled = await handleStructuredPayload(replyCtx, replyText, recordOutboundActivity);
-                if (handled) return;
-
-                // ============ 非结构化消息发送 ============
-                await sendPlainReply(
-                  payload, replyText, deliverEvent, deliverActx,
-                  sendWithRetry, consumeQuoteRef, toolMediaUrls,
-                );
-
-                pluginRuntime.channel.activity.record({
-                  channel: "qqbot",
-                  accountId: account.accountId,
-                  direction: "outbound",
-                });
+                if (debouncer) {
+                  await debouncer.deliver(payload, info);
+                } else {
+                  await executeDeliver(payload, info);
+                }
               },
               onError: async (err: unknown) => {
                 log?.error(`[qqbot:${account.accountId}] Dispatch error: ${err}`);
@@ -990,8 +1034,15 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   timeoutId = null;
                 }
                 
-                // 发送错误提示给用户，显示完整错误信息
                 const errMsg = String(err);
+
+                // 兼容 openclaw 3.23+ 的 plugin-sdk/root-alias.cjs 模块解析失败
+                if (errMsg.includes("Unable to resolve plugin runtime module") || errMsg.includes("root-alias.cjs")) {
+                  log?.error(`[qqbot:${account.accountId}] ⚠️ openclaw 框架 runtime 模块解析失败，可能是 openclaw 版本与 plugin-sdk 不兼容。请尝试: npm install -g openclaw@latest && openclaw gateway restart`);
+                  await sendErrorMessage("⚠️ AI 服务暂时不可用：openclaw 框架运行时模块加载失败。\n\n请管理员执行：\nnpm install -g openclaw@latest\nopenclaw gateway restart\n\n斜杠命令（如 /bot-ping）不受影响。");
+                  return;
+                }
+
                 if (errMsg.includes("401") || errMsg.includes("key") || errMsg.includes("auth")) {
                   log?.error(`[qqbot:${account.accountId}] AI auth error: ${errMsg}`);
                 } else {
@@ -1026,13 +1077,26 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
               log?.error(`[qqbot:${account.accountId}] Dispatch completed with ${toolDeliverCount} tool deliver(s) but no block deliver, sending fallback`);
               await sendToolFallback();
             }
+            // 销毁 debouncer，flush 剩余缓冲的文本
+            if (debouncer) {
+              await debouncer.dispose();
+              debouncer = null;
+            }
           }
         } catch (err) {
+          const errStr = String(err);
           log?.error(`[qqbot:${account.accountId}] Message processing failed: ${err}`);
+          // 兼容 openclaw 3.23+ runtime 模块解析失败：给用户发可操作的提示
+          if (errStr.includes("Unable to resolve plugin runtime module") || errStr.includes("root-alias.cjs")) {
+            try {
+              await sendErrorMessage("⚠️ AI 服务暂时不可用：openclaw 框架运行时模块加载失败。\n\n请管理员执行：\nnpm install -g openclaw@latest\nopenclaw gateway restart\n\n斜杠命令（如 /bot-ping）不受影响。");
+            } catch { /* best-effort */ }
+          }
         } finally {
           // 无论成功/失败/超时，都停止输入状态续期
           typing.keepAlive?.stop();
         }
+        }); // end runWithRequestContext
       };
 
       ws.on("open", () => {
@@ -1131,18 +1195,18 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
                 // 仅 startGateway 后的首次 READY 才发送上线通知
                 // ws 断线重连（resume 失败后重新 Identify）产生的 READY 不发送
-                if (!isFirstReadyGlobal) {
+                if (!_pendingFirstReady.has(account.accountId)) {
                   log?.info(`[qqbot:${account.accountId}] Skipping startup greeting (reconnect READY, not first startup)`);
                 } else {
-                  isFirstReadyGlobal = false;
+                  _pendingFirstReady.delete(account.accountId);
                   sendStartupGreetings(adminCtx, "READY");
                 } // end isFirstReady
               } else if (t === "RESUMED") {
                 log?.info(`[qqbot:${account.accountId}] Session resumed`);
                 onReady?.(d); // 通知框架连接已恢复，避免 health-monitor 误判 disconnected
                 // RESUMED 也属于首次启动（gateway restart 通常走 resume）
-                if (isFirstReadyGlobal) {
-                  isFirstReadyGlobal = false;
+                if (_pendingFirstReady.has(account.accountId)) {
+                  _pendingFirstReady.delete(account.accountId);
                   sendStartupGreetings(adminCtx, "RESUMED");
                 }
                 // P1-2: 更新 Session 连接时间

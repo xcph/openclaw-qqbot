@@ -22,7 +22,7 @@ metadata: {"openclaw":{"emoji":"⏰","requires":{"config":["channels.qqbot"]}}}
 |------|------|------|
 | `action` | 操作类型 | `"add"` / `"list"` / `"remove"` |
 | `content` | 提醒内容 | `"喝水"` |
-| `to` | 目标地址（取自上下文 `[QQBot] to=` 的值） | `"user_openid_xxx"` 或 `"group:group_openid_xxx"` |
+| `to` | 目标地址（可选，系统自动获取，通常无需填写） | — |
 | `time` | 时间（相对时间或 cron 表达式） | `"5m"` / `"1h30m"` / `"0 8 * * *"` |
 | `jobId` | 任务 ID（仅 remove） | `"xxx"` |
 
@@ -34,7 +34,7 @@ metadata: {"openclaw":{"emoji":"⏰","requires":{"config":["channels.qqbot"]}}}
 
 用户说："5分钟后提醒我喝水"
 
-1. 调用 `qqbot_remind`：`{ "action": "add", "content": "喝水", "to": "xxx", "time": "5m" }`
+1. 调用 `qqbot_remind`：`{ "action": "add", "content": "喝水", "time": "5m" }`
 2. 收到返回的 `cronParams` → 立即调用 `cron` 工具，参数为该 `cronParams`
 3. 回复用户：`⏰ 好的，5分钟后提醒你喝水~`
 
@@ -56,7 +56,7 @@ metadata: {"openclaw":{"emoji":"⏰","requires":{"config":["channels.qqbot"]}}}
 | `payload.kind` | `"agentTurn"` | `systemEvent` 不会发 QQ 消息 |
 | `payload.deliver` | `true` | 否则不投递 |
 | `payload.channel` | `"qqbot"` | QQ 通道标识 |
-| `payload.to` | 用户 openid | 从上下文获取 |
+| `payload.to` | 用户 openid | 从 `To` 字段获取 |
 | `sessionTarget` | `"isolated"` | 隔离会话避免污染 |
 
 > `schedule.atMs` 必须是**绝对毫秒时间戳**（如 `1770733800000`），不支持 `"5m"` 等相对字符串。

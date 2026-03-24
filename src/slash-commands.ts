@@ -20,16 +20,10 @@ import { getUpdateInfo, checkVersionExists } from "./update-checker.js";
 import { getHomeDir, getQQBotDataDir, isWindows } from "./utils/platform.js";
 import { saveCredentialBackup } from "./credential-backup.js";
 import { fileURLToPath } from "node:url";
+import { getPackageVersion } from "./utils/pkg-version.js";
 const require = createRequire(import.meta.url);
 
-// 读取 package.json 中的版本号
-let PLUGIN_VERSION = "unknown";
-try {
-  const pkg = require("../package.json");
-  PLUGIN_VERSION = pkg.version ?? "unknown";
-} catch {
-  // fallback
-}
+let PLUGIN_VERSION = getPackageVersion(import.meta.url);
 
 // 获取 openclaw 框架版本（缓存结果，只执行一次）
 let _frameworkVersion: string | null = null;
@@ -343,7 +337,7 @@ registerCommand({
   },
 });
 
-const DEFAULT_UPGRADE_URL = "https://doc.weixin.qq.com/doc/w3_AKEAGQaeACgCNHrh1CbHzTAKtT2gB?scode=AJEAIQdfAAozxFEnLZAKEAGQaeACg";
+const DEFAULT_UPGRADE_URL = "https://docs.qq.com/doc/DSGxOZk1oVnVKVkpq";
 
 function saveUpgradeGreetingTarget(accountId: string, appId: string, openid: string): void {
   const safeAccountId = accountId.replace(/[^a-zA-Z0-9._-]/g, "_");
@@ -667,6 +661,38 @@ function findPowerShell(): string | null {
 }
 
 /**
+ * 将升级脚本复制到临时位置，避免升级过程中插件目录被清理后脚本丢失。
+ * 返回临时脚本路径，失败返回 null。
+ */
+function copyScriptToTemp(scriptPath: string): string | null {
+  try {
+    const ext = path.extname(scriptPath);
+    const tmpDir = path.join(getHomeDir(), ".openclaw", ".qqbot-upgrade-tmp");
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const tmpScript = path.join(tmpDir, `upgrade-via-npm${ext}`);
+    fs.copyFileSync(scriptPath, tmpScript);
+    if (!isWindows()) {
+      fs.chmodSync(tmpScript, 0o755);
+    }
+    return tmpScript;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 清理临时升级脚本目录
+ */
+function cleanupTempScript(): void {
+  try {
+    const tmpDir = path.join(getHomeDir(), ".openclaw", ".qqbot-upgrade-tmp");
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  } catch {
+    // 非关键，静默忽略
+  }
+}
+
+/**
  * 执行热更新：执行脚本(--no-restart) → 立即触发 gateway restart
  *
  * fire-and-forget 操作：
@@ -675,10 +701,15 @@ function findPowerShell(): string | null {
  * - 新进程启动时 getStartupGreeting() 检测到版本变更，自动通知管理员
  *
  * Windows 使用 PowerShell 执行 .ps1 脚本，Mac/Linux 使用 bash 执行 .sh 脚本。
+ *
+ * 安全机制：脚本会被复制到临时目录再执行，避免升级过程中插件目录被操作导致脚本自身丢失。
  */
 function fireHotUpgrade(targetVersion?: string): HotUpgradeStartResult {
-  const scriptPath = getUpgradeScriptPath();
-  if (!scriptPath) return { ok: false, reason: "no-script" };
+  const originalScriptPath = getUpgradeScriptPath();
+  if (!originalScriptPath) return { ok: false, reason: "no-script" };
+
+  // 将脚本复制到临时位置，避免升级过程中脚本被删除
+  const scriptPath = copyScriptToTemp(originalScriptPath) || originalScriptPath;
 
   const cli = findCli();
   if (!cli) return { ok: false, reason: "no-cli" };
@@ -705,7 +736,7 @@ function fireHotUpgrade(targetVersion?: string): HotUpgradeStartResult {
     shellArgs = [scriptPath, "--no-restart", ...(targetVersion ? ["--version", targetVersion] : [])];
   }
 
-  console.log(`[qqbot] fireHotUpgrade: shell=${shell}, script=${scriptPath}, cli=${cli}, target=${targetVersion || "latest"}`);
+  console.log(`[qqbot] fireHotUpgrade: shell=${shell}, script=${scriptPath} (original: ${originalScriptPath}), cli=${cli}, target=${targetVersion || "latest"}`);
 
   // 异步执行升级脚本
   execFile(shell, shellArgs, {
@@ -717,6 +748,7 @@ function fireHotUpgrade(targetVersion?: string): HotUpgradeStartResult {
       console.error(`[qqbot] fireHotUpgrade: script failed: ${error.message}`);
       if (stdout) console.error(`[qqbot] fireHotUpgrade: stdout: ${stdout.slice(0, 2000)}`);
       if (_stderr) console.error(`[qqbot] fireHotUpgrade: stderr: ${_stderr.slice(0, 2000)}`);
+      cleanupTempScript();
       _upgrading = false;
       return;
     }
@@ -728,11 +760,15 @@ function fireHotUpgrade(targetVersion?: string): HotUpgradeStartResult {
     const newVersion = versionMatch?.[1];
     if (newVersion === "unknown") {
       console.error(`[qqbot] fireHotUpgrade: script output QQBOT_NEW_VERSION=unknown, aborting restart`);
+      cleanupTempScript();
       _upgrading = false;
       return;
     }
 
     console.log(`[qqbot] fireHotUpgrade: new version=${newVersion || "(not detected)"}, triggering restart...`);
+
+    // 脚本执行成功，清理临时脚本副本
+    cleanupTempScript();
 
     // 文件替换成功，在 restart 之前把 source 从 path 切换为 npm，
     // 确保新进程启动时读到的是 npm source，不会被本地源码覆盖。
@@ -794,7 +830,11 @@ function fireHotUpgrade(targetVersion?: string): HotUpgradeStartResult {
 /**
  * /bot-upgrade — 统一升级入口
  *
- * 产品流程：
+ * upgradeMode 开关：
+ *   - "doc"（默认）：只展示升级指引文档，不执行热更新
+ *   - "hot-reload"：执行 npm 升级脚本进行热更新
+ *
+ * 热更新模式下的产品流程：
  *   /bot-upgrade              — 展示版本信息+确认按钮（不直接升级）
  *   /bot-upgrade --latest     — 确认升级到最新版本
  *   /bot-upgrade --version X  — 升级到指定版本
@@ -804,21 +844,54 @@ let _upgrading = false; // 升级锁
 
 registerCommand({
   name: "bot-upgrade",
-  description: "检查更新并自动热更",
+  description: "检查更新并查看升级指引",
   usage: [
-    `/bot-upgrade              检查是否有新版本（展示信息+确认按钮）`,
-    `/bot-upgrade --latest     确认升级到最新版本`,
-    `/bot-upgrade --version X  升级到指定版本（如 1.6.5）`,
-    `/bot-upgrade --force      强制重新安装当前版本`,
-    ``,
-    `⚠️ 仅在私聊中可用。升级过程约 30~60 秒，期间服务短暂不可用。`,
-    ``,
-    `环境要求：`,
-    `  - 操作系统：macOS / Linux / Windows`,
-    `  - OpenClaw 框架版本 ≥ ${UPGRADE_REQUIREMENTS.minFrameworkVersion}`,
-    `  - Node.js ≥ v${UPGRADE_REQUIREMENTS.minNodeVersion}`,
+    `/bot-upgrade              检查是否有新版本`,
+    `/bot-upgrade --latest     确认升级到最新版本（需 upgradeMode=hot-reload）`,
+    `/bot-upgrade --version X  升级到指定版本（需 upgradeMode=hot-reload）`,
+    `/bot-upgrade --force      强制重新安装当前版本（需 upgradeMode=hot-reload）`,
   ].join("\n"),
   handler: async (ctx) => {
+    const url = ctx.accountConfig?.upgradeUrl || DEFAULT_UPGRADE_URL;
+    const upgradeMode = ctx.accountConfig?.upgradeMode || "doc";
+    const args = ctx.args.trim();
+    const info = await getUpdateInfo();
+
+    const GITHUB_URL = "https://github.com/tencent-connect/openclaw-qqbot/";
+
+    // ── doc 模式（默认）：只展示升级指引，不执行热更新 ──
+    if (upgradeMode !== "hot-reload") {
+      if (info.checkedAt === 0) {
+        return `⏳ 版本检查中，请稍后再试`;
+      }
+      if (info.error) {
+        return [
+          `❌ 主机网络访问异常，无法检查更新`,
+          ``,
+          `查看升级指引：[点击查看](${url})`,
+        ].join("\n");
+      }
+      if (!info.hasUpdate) {
+        return [
+          `✅ 当前已是最新版本 v${PLUGIN_VERSION}`,
+          ``,
+          `项目地址：[GitHub](${GITHUB_URL})`,
+        ].join("\n");
+      }
+
+      return [
+        `🆕 发现新版本`,
+        ``,
+        `当前版本：**v${PLUGIN_VERSION}**`,
+        `最新版本：**v${info.latest}**`,
+        ``,
+        `📖 升级指引：[点击查看](${url})`,
+        `🌟 官方 GitHub 仓库：[点击前往](${GITHUB_URL})`,
+      ].join("\n");
+    }
+
+    // ── hot-reload 模式：执行热更新 ──
+
     // 升级相关指令仅在私聊中可用
     if (ctx.type !== "c2c") {
       return `💡 请在私聊中使用此指令`;
@@ -828,10 +901,6 @@ registerCommand({
     if (_upgrading) {
       return `⏳ 正在升级中，请稍候...`;
     }
-
-    const url = ctx.accountConfig?.upgradeUrl || DEFAULT_UPGRADE_URL;
-    const args = ctx.args.trim();
-    const info = await getUpdateInfo();
 
     let isForce = false;
     let isLatest = false;
@@ -870,8 +939,6 @@ registerCommand({
       }
     }
 
-    const GITHUB_URL = "https://github.com/tencent-connect/openclaw-qqbot/";
-
     // ── 无参数（也没有 --latest / --version / --force）：只展示信息+确认按钮 ──
     if (!versionArg && !isLatest && !isForce) {
       if (info.checkedAt === 0) {
@@ -893,7 +960,7 @@ registerCommand({
         return lines.join("\n");
       }
 
-      // 有新版本：展示信息 + 确认按钮（同通道：alpha 只展示 alpha，正式版只展示正式版）
+      // 有新版本：展示信息 + 确认按钮
       return [
         `🆕 发现新版本`,
         ``,

@@ -10,6 +10,7 @@
 
 import { createRequire } from "node:module";
 import https from "node:https";
+import { getPackageVersion } from "./utils/pkg-version.js";
 
 const require = createRequire(import.meta.url);
 
@@ -21,13 +22,7 @@ const REGISTRIES = [
   `https://registry.npmmirror.com/${ENCODED_PKG}`,
 ];
 
-let CURRENT_VERSION = "unknown";
-try {
-  const pkg = require("../package.json");
-  CURRENT_VERSION = pkg.version ?? "unknown";
-} catch {
-  // fallback
-}
+let CURRENT_VERSION = getPackageVersion(import.meta.url);
 
 export interface UpdateInfo {
   current: string;

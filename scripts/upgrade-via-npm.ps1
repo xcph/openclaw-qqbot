@@ -95,7 +95,7 @@ Write-Host "==========================================="
 Write-Host ""
 
 # [1/3] Download and extract new version
-Write-Host "[1/3] Downloading new version..."
+Write-Host "[1/5] Downloading new version..."
 $TMPDIR_PACK = Join-Path ([System.IO.Path]::GetTempPath()) "qqbot-pack-$([guid]::NewGuid().ToString('N').Substring(0,8))"
 $EXTRACT_DIR = Join-Path ([System.IO.Path]::GetTempPath()) "qqbot-extract-$([guid]::NewGuid().ToString('N').Substring(0,8))"
 New-Item -ItemType Directory -Path $TMPDIR_PACK -Force | Out-Null
@@ -172,9 +172,108 @@ try {
     if (Test-Path $EXTRACT_DIR) { Remove-Item -Recurse -Force $EXTRACT_DIR -ErrorAction SilentlyContinue }
 }
 
-# [2/3] Replace plugin directory (in-place overwrite to avoid file-lock issues)
+# ── Preflight: validate new package before writing to extensions ──
 Write-Host ""
-Write-Host "[2/3] Replacing plugin directory..."
+Write-Host "[2/5] Preflight checks..."
+$PreflightOK = $true
+
+# (a) package.json exists and has version
+$StagingPkg = Join-Path $STAGING_DIR "package.json"
+$StagingVersion = ""
+if (-not (Test-Path $StagingPkg)) {
+    Write-Host "  [FAIL] New package missing package.json" -ForegroundColor Red
+    $PreflightOK = $false
+} else {
+    try {
+        $spkg = Get-Content $StagingPkg -Raw | ConvertFrom-Json
+        $StagingVersion = $spkg.version
+        if (-not $StagingVersion) { throw "no version" }
+        Write-Host "  [OK] Version: $StagingVersion"
+    } catch {
+        Write-Host "  [FAIL] package.json unreadable or missing version" -ForegroundColor Red
+        $PreflightOK = $false
+    }
+}
+
+# (b) Entry file exists
+$EntryFile = ""
+foreach ($candidate in @("dist\index.js", "index.js")) {
+    if (Test-Path (Join-Path $STAGING_DIR $candidate)) {
+        $EntryFile = $candidate
+        break
+    }
+}
+if (-not $EntryFile) {
+    Write-Host "  [FAIL] Missing entry file (dist\index.js or index.js)" -ForegroundColor Red
+    $PreflightOK = $false
+} else {
+    Write-Host "  [OK] Entry file: $EntryFile"
+}
+
+# (c) Core directory dist/src
+$CoreSrcDir = Join-Path $STAGING_DIR "dist" "src"
+if (-not (Test-Path $CoreSrcDir)) {
+    Write-Host "  [FAIL] Missing core directory dist\src\" -ForegroundColor Red
+    $PreflightOK = $false
+} else {
+    $CoreJsCount = (Get-ChildItem -Path $CoreSrcDir -Filter "*.js" -File -Recurse -ErrorAction SilentlyContinue | Measure-Object).Count
+    Write-Host "  [OK] dist\src\ contains $CoreJsCount JS files"
+    if ($CoreJsCount -lt 5) {
+        Write-Host "  [FAIL] JS file count too low (expected >= 5, got $CoreJsCount)" -ForegroundColor Red
+        $PreflightOK = $false
+    }
+}
+
+# (d) Critical module files
+$MissingModules = @()
+foreach ($mod in @("dist\src\gateway.js", "dist\src\api.js", "dist\src\admin-resolver.js")) {
+    if (-not (Test-Path (Join-Path $STAGING_DIR $mod))) {
+        $MissingModules += $mod
+    }
+}
+if ($MissingModules.Count -gt 0) {
+    Write-Host "  [FAIL] Missing critical modules: $($MissingModules -join ', ')" -ForegroundColor Red
+    $PreflightOK = $false
+} else {
+    Write-Host "  [OK] Critical modules intact"
+}
+
+# (e) Bundled node_modules health check
+$nmDir = Join-Path $STAGING_DIR "node_modules"
+if (Test-Path $nmDir) {
+    $BundledOK = $true
+    foreach ($dep in @("ws", "silk-wasm")) {
+        if (-not (Test-Path (Join-Path $nmDir $dep))) {
+            Write-Host "  [WARN] Bundled dependency missing: $dep" -ForegroundColor Yellow
+            $BundledOK = $false
+        }
+    }
+    if ($BundledOK) {
+        Write-Host "  [OK] Core bundled dependencies intact"
+    }
+}
+
+# (f) Version sanity check
+if ($StagingVersion) {
+    $StagingMajor = ($StagingVersion -split "\.")[0]
+    if ($StagingMajor -eq "0") {
+        Write-Host "  [WARN] Major version is 0 ($StagingVersion), may not be a production release" -ForegroundColor Yellow
+    }
+}
+
+# Preflight result
+if (-not $PreflightOK) {
+    Write-Host ""
+    Write-Host "[ABORT] Preflight checks failed, upgrade cancelled (old version unaffected)" -ForegroundColor Red
+    Remove-Item -Recurse -Force $STAGING_DIR -ErrorAction SilentlyContinue
+    exit 1
+}
+Write-Host "  [OK] All preflight checks passed"
+
+# [3/5] Replace plugin directory (in-place overwrite to avoid file-lock issues)
+Write-Host ""
+Write-Host "[3/5] Replacing plugin directory..."
+if (-not (Test-Path $EXTENSIONS_DIR)) { New-Item -ItemType Directory -Path $EXTENSIONS_DIR -Force | Out-Null }
 $TARGET_DIR = Join-Path $EXTENSIONS_DIR "openclaw-qqbot"
 
 if (-not (Test-Path $TARGET_DIR)) {
@@ -217,9 +316,50 @@ foreach ($legacyName in @("qqbot", "openclaw-qq")) {
 }
 Write-Host "  Installed to: $TARGET_DIR"
 
-# [3/3] Verify installation
+# Execute postinstall script to create openclaw SDK symlink
+# (upgrade-via-npm is pure file operation, npm install is not run, so postinstall won't trigger automatically)
+$PostinstallScript = Join-Path $TARGET_DIR "scripts" "postinstall-link-sdk.js"
+if (Test-Path $PostinstallScript) {
+    Write-Host "  Running postinstall: creating openclaw SDK symlink..."
+    try {
+        Push-Location $TARGET_DIR
+        $postOutput = & node $PostinstallScript 2>&1
+        Pop-Location
+        if ($postOutput) { Write-Host "  $postOutput" }
+    } catch {
+        Write-Host "  [WARN] postinstall script failed (non-fatal)" -ForegroundColor Yellow
+        try { Pop-Location } catch {}
+    }
+    # Verify symlink creation
+    $symlinkPath = Join-Path $TARGET_DIR "node_modules" "openclaw"
+    if (Test-Path $symlinkPath) {
+        Write-Host "  [OK] openclaw SDK symlink ready"
+    } else {
+        Write-Host "  [WARN] openclaw SDK symlink not created, attempting manual fallback..." -ForegroundColor Yellow
+        $cliDataDir = Split-Path $EXTENSIONS_DIR -Parent
+        $cliName = (Split-Path $cliDataDir -Leaf) -replace '^\.',''
+        try {
+            $globalRoot = (& npm root -g 2>$null).Trim()
+            $globalPkg = Join-Path $globalRoot $cliName
+            if ($globalRoot -and (Test-Path $globalPkg)) {
+                $nmDir = Join-Path $TARGET_DIR "node_modules"
+                if (-not (Test-Path $nmDir)) { New-Item -ItemType Directory -Path $nmDir -Force | Out-Null }
+                New-Item -ItemType Junction -Path $symlinkPath -Target $globalPkg -Force | Out-Null
+                Write-Host "  [OK] Manual symlink created: -> $globalPkg"
+            } else {
+                Write-Host "  [ERROR] Cannot locate global $cliName installation (npm root -g: $globalRoot)" -ForegroundColor Red
+            }
+        } catch {
+            Write-Host "  [ERROR] Manual symlink creation also failed: $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+} else {
+    Write-Host "  [WARN] postinstall script not found, skipping symlink creation" -ForegroundColor Yellow
+}
+
+# [4/5] Verify installation
 Write-Host ""
-Write-Host "[3/3] Verifying installation..."
+Write-Host "[4/5] Verifying installation..."
 $NEW_VERSION = "unknown"
 try {
     $newPkgPath = Join-Path $TARGET_DIR "package.json"
@@ -249,7 +389,7 @@ if ($NoRestart) {
     exit 0
 }
 
-# [4/4] Configure appid/secret
+# [配置] Configure appid/secret
 if ($AppId -and $Secret) {
     Write-Host ""
     Write-Host "[Config] Writing qqbot channel config..."
@@ -285,11 +425,26 @@ if ($AppId -and $Secret) {
 
 # [5/5] Restart gateway
 Write-Host ""
+
+# Manual upgrade: write startup-marker before restart to prevent bot from sending duplicate notification
+if ($NEW_VERSION -and $NEW_VERSION -ne "unknown") {
+    $MarkerDir = Join-Path $HOME_DIR ".openclaw" "qqbot" "data"
+    if (-not (Test-Path $MarkerDir)) { New-Item -ItemType Directory -Path $MarkerDir -Force | Out-Null }
+    $MarkerFile = Join-Path $MarkerDir "startup-marker.json"
+    $Now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+    @{ version = $NEW_VERSION; startedAt = $Now; greetedAt = $Now } | ConvertTo-Json -Compress | Set-Content $MarkerFile -Encoding UTF8
+}
+
 Write-Host "[Restart] Restarting gateway..."
 try {
     & $CMD gateway restart 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) {
         Write-Host "  Gateway restarted"
+        # Print the same upgrade greeting as bot notification (no need to push via bot in manual upgrade)
+        if ($NEW_VERSION -and $NEW_VERSION -ne "unknown") {
+            Write-Host ""
+            Write-Host "🎉 QQBot 插件已更新至 v${NEW_VERSION}，在线等候你的吩咐。"
+        }
     } else { throw "restart failed" }
 } catch {
     Write-Host "  [WARN] Gateway restart failed, please run manually: $CMD gateway restart" -ForegroundColor Yellow

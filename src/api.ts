@@ -3,7 +3,6 @@
  * [修复版] 已重构为支持多实例并发，消除全局变量冲突
  */
 
-import { createRequire } from "node:module";
 import os from "node:os";
 import { computeFileHash, getCachedFileInfo, setCachedFileInfo } from "./utils/upload-cache.js";
 import { sanitizeFileName } from "./utils/platform.js";
@@ -14,9 +13,8 @@ const TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken";
 // ============ Plugin User-Agent ============
 // 格式: QQBotPlugin/{version} (Node/{nodeVersion}; {os})
 // 示例: QQBotPlugin/1.6.0 (Node/22.14.0; darwin)
-const _require = createRequire(import.meta.url);
-let _pluginVersion = "unknown";
-try { _pluginVersion = _require("../package.json").version ?? "unknown"; } catch { /* fallback */ }
+import { getPackageVersion } from "./utils/pkg-version.js";
+const _pluginVersion = getPackageVersion(import.meta.url);
 export const PLUGIN_USER_AGENT = `QQBotPlugin/${_pluginVersion} (Node/${process.versions.node}; ${os.platform()})`;
 
 // 运行时配置
@@ -285,22 +283,48 @@ export async function apiRequest<T = unknown>(
   const traceId = res.headers.get("x-tps-trace-id") ?? "";
   console.log(`[qqbot-api] <<< Status: ${res.status} ${res.statusText}${traceId ? ` | TraceId: ${traceId}` : ""}`);
 
-  let data: T;
   let rawBody: string;
   try {
     rawBody = await res.text();
-    console.log(`[qqbot-api] <<< Body:`, rawBody);
-    data = JSON.parse(rawBody) as T;
   } catch (err) {
-    throw new Error(`Failed to parse response[${path}]: ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(`读取响应失败[${path}]: ${err instanceof Error ? err.message : String(err)}`);
   }
+  console.log(`[qqbot-api] <<< Body:`, rawBody);
+
+  // 检测非 JSON 响应（HTML 网关错误页 / CDN 限流页等）
+  const contentType = res.headers.get("content-type") ?? "";
+  const isHtmlResponse = contentType.includes("text/html") || rawBody.trimStart().startsWith("<");
 
   if (!res.ok) {
-    const error = data as { message?: string; code?: number };
-    throw new Error(`API Error [${path}]: ${error.message ?? JSON.stringify(data)}`);
+    if (isHtmlResponse) {
+      // HTML 响应 = 网关/限流层返回的错误页，给出友好提示
+      const statusHint = res.status === 502 || res.status === 503 || res.status === 504
+        ? "调用发生异常，请稍候重试"
+        : res.status === 429
+          ? "请求过于频繁，已被限流"
+          : `开放平台返回 HTTP ${res.status}`;
+      throw new Error(`${statusHint}（${path}），请稍后重试`);
+    }
+    // JSON 错误响应
+    try {
+      const error = JSON.parse(rawBody) as { message?: string; code?: number };
+      throw new Error(`API Error [${path}]: ${error.message ?? rawBody}`);
+    } catch (parseErr) {
+      if (parseErr instanceof Error && parseErr.message.startsWith("API Error")) throw parseErr;
+      throw new Error(`API Error [${path}] HTTP ${res.status}: ${rawBody.slice(0, 200)}`);
+    }
   }
 
-  return data;
+  // 成功响应但不是 JSON（极端异常情况）
+  if (isHtmlResponse) {
+    throw new Error(`QQ 服务端返回了非 JSON 响应（${path}），可能是临时故障，请稍后重试`);
+  }
+
+  try {
+    return JSON.parse(rawBody) as T;
+  } catch {
+    throw new Error(`开放平台响应格式异常（${path}），请稍后重试`);
+  }
 }
 
 // ============ 上传重试（指数退避） ============

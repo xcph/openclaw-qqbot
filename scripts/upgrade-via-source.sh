@@ -444,6 +444,27 @@ else
     # gateway 已在安装前 stop，此时不会有自动 restart 的问题
     # 所有配置写入完成后，在 Step 6 统一启动
 
+    # 确保 openclaw/plugin-sdk 可解析：
+    # openclaw plugins install 不会执行 npm lifecycle scripts，
+    # 需要手动调用 postinstall-link-sdk.js 创建 node_modules/openclaw → 全局 openclaw 的符号链接。
+    # 必须在 peerDeps 清理之后执行，否则 symlink 会被清理逻辑删除。
+    for _candidate_name in openclaw-qqbot qqbot openclaw-qq; do
+        _postinstall="$HOME/.openclaw/extensions/$_candidate_name/scripts/postinstall-link-sdk.js"
+        if [ -f "$_postinstall" ]; then
+            echo "  执行 postinstall-link-sdk..."
+            if node "$_postinstall" 2>&1; then
+                echo "  ✅ plugin-sdk 链接就绪"
+            else
+                echo "  ⚠️  postinstall-link-sdk 失败，插件可能无法加载"
+            fi
+            break
+        fi
+    done
+
+    # 清理 openclaw CLI install 留下的 backup 目录，
+    # 避免 gateway 发现两个同 id 插件不断刷 duplicate plugin id 警告
+    find "$HOME/.openclaw/extensions/" -maxdepth 1 -name ".openclaw-qqbot-backup-*" -exec rm -rf {} + 2>/dev/null || true
+
     # 记录更新后的 qqbot 插件版本
     NEW_QQBOT_VERSION=$(node -e '
         try {
