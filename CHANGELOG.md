@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.6.5] - 2026-03-24
+
+### OpenClaw 3.23 Compatibility
+
+OpenClaw 3.23 introduced strict config validation at CLI startup — any `openclaw` subcommand (including `plugins install`, `plugins update`, `gateway stop`) now validates the entire `openclaw.json` before execution. Since `channels.qqbot` is registered by this plugin (not a built-in channel id), running these commands when the plugin is not yet loaded causes `"Config invalid: unknown channel id: qqbot"` and the command fails entirely (chicken-and-egg problem).
+
+This release adapts all upgrade paths for 3.23+:
+
+- **Config stash/restore for CLI commands**: `upgrade-via-npm.sh` and `upgrade-via-source.sh` temporarily remove `channels.qqbot` from `openclaw.json` before running any openclaw CLI command, then restore it after completion.
+- **Gateway pre-stop before install**: `upgrade-via-source.sh` now stops the gateway before `plugins install` to prevent chokidar from triggering a restart on the intermediate config state (with `channels.qqbot` removed), which would also hit the validation error.
+
+### Fixed
+
+- **Startup greeting marker path**: Fixed marker directory to use `$CMD` variable instead of hardcoded path, supporting multi-CLI environments.
+
+### Changed
+
+- **Silence non-upgrade startup greeting**: Startup greeting is now suppressed unless triggered by a `/bot-upgrade` hot update, reducing noise during routine gateway restarts.
+
 ## [1.6.4] - 2026-03-20
 
 ### Added

@@ -4,6 +4,25 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [1.6.5] - 2026-03-24
+
+### OpenClaw 3.23 兼容适配
+
+OpenClaw 3.23 在 CLI 启动时引入了严格配置校验——任何 `openclaw` 子命令（包括 `plugins install`、`plugins update`、`gateway stop`）执行前都会校验整个 `openclaw.json`。由于 `channels.qqbot` 是本插件注册的（非内置 channel id），当插件尚未加载时执行这些命令会报 `"Config invalid: unknown channel id: qqbot"` 直接失败（鸡生蛋问题）。
+
+本版本对所有升级路径进行了 3.23+ 适配：
+
+- **CLI 命令前配置暂存/恢复**：`upgrade-via-npm.sh` 和 `upgrade-via-source.sh` 在执行任何 openclaw CLI 命令前临时移除 `channels.qqbot`，完成后恢复。
+- **安装前预停 Gateway**：`upgrade-via-source.sh` 在 `plugins install` 前先停止 gateway，防止 chokidar 在配置中间状态（`channels.qqbot` 已移除）时触发 restart，避免同样的校验错误。
+
+### 修复
+
+- **启动问候 marker 路径**：修复 marker 目录使用 `$CMD` 变量替代硬编码路径，支持多 CLI 环境。
+
+### 变更
+
+- **静默非升级启动问候**：启动问候仅在 `/bot-upgrade` 热更新触发时发送，常规 gateway 重启不再发送，减少消息干扰。
+
 ## [1.6.4] - 2026-03-20
 
 ### 新增
