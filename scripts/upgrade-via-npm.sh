@@ -236,7 +236,7 @@ fi
 # (e) bundled node_modules 健康检查
 if [ -d "$STAGING_DIR/node_modules" ]; then
     BUNDLED_OK=true
-    for dep in "ws" "undici"; do
+    for dep in "ws" "silk-wasm"; do
         if [ ! -d "$STAGING_DIR/node_modules/$dep" ]; then
             echo "  ⚠️  bundled 依赖缺失: $dep"
             BUNDLED_OK=false
@@ -296,6 +296,36 @@ for dir_name in qqbot openclaw-qq; do
     [ -d "$EXTENSIONS_DIR/$dir_name" ] && rm -rf "$EXTENSIONS_DIR/$dir_name"
 done
 echo "  已安装到: $TARGET_DIR"
+
+# 执行 postinstall 脚本创建 openclaw SDK symlink
+# （upgrade-via-npm 是纯文件操作，不走 npm install，所以 postinstall 不会自动触发）
+POSTINSTALL_SCRIPT="$TARGET_DIR/scripts/postinstall-link-sdk.js"
+if [ -f "$POSTINSTALL_SCRIPT" ]; then
+    echo "  执行 postinstall: 创建 openclaw SDK symlink..."
+    POSTINSTALL_OUTPUT="$(cd "$TARGET_DIR" && node "$POSTINSTALL_SCRIPT" 2>&1)" || true
+    [ -n "$POSTINSTALL_OUTPUT" ] && echo "  $POSTINSTALL_OUTPUT"
+    # 验证 symlink 是否创建成功
+    if [ -d "$TARGET_DIR/node_modules/openclaw" ]; then
+        echo "  ✅ openclaw SDK symlink 已就绪"
+    else
+        echo "  ⚠️  openclaw SDK symlink 未创建，插件可能无法加载"
+        echo "  尝试手动创建 symlink..."
+        # 手动 fallback：尝试从 CLI 数据目录名推断全局包名
+        _CLI_DATA_DIR="$(dirname "$EXTENSIONS_DIR")"
+        _CLI_NAME="$(basename "$_CLI_DATA_DIR" | sed 's/^\.//')"
+        _GLOBAL_ROOT="$(npm root -g 2>/dev/null || true)"
+        if [ -n "$_GLOBAL_ROOT" ] && [ -n "$_CLI_NAME" ] && [ -d "$_GLOBAL_ROOT/$_CLI_NAME" ]; then
+            mkdir -p "$TARGET_DIR/node_modules"
+            ln -sf "$_GLOBAL_ROOT/$_CLI_NAME" "$TARGET_DIR/node_modules/openclaw" 2>/dev/null && \
+                echo "  ✅ 手动 symlink 创建成功: -> $_GLOBAL_ROOT/$_CLI_NAME" || \
+                echo "  ❌ 手动 symlink 创建也失败了"
+        else
+            echo "  ❌ 无法定位全局 $_CLI_NAME 安装路径（npm root -g: $_GLOBAL_ROOT）"
+        fi
+    fi
+else
+    echo "  ⚠️  未找到 postinstall 脚本，跳过 symlink 创建"
+fi
 
 # [4/5] 输出新版本号和升级报告（供调用方解析）
 echo ""

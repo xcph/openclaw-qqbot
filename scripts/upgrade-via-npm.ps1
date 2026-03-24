@@ -242,7 +242,7 @@ if ($MissingModules.Count -gt 0) {
 $nmDir = Join-Path $STAGING_DIR "node_modules"
 if (Test-Path $nmDir) {
     $BundledOK = $true
-    foreach ($dep in @("ws", "undici")) {
+    foreach ($dep in @("ws", "silk-wasm")) {
         if (-not (Test-Path (Join-Path $nmDir $dep))) {
             Write-Host "  [WARN] Bundled dependency missing: $dep" -ForegroundColor Yellow
             $BundledOK = $false
@@ -314,6 +314,47 @@ foreach ($legacyName in @("qqbot", "openclaw-qq")) {
     if (Test-Path $p) { Remove-Item -Recurse -Force $p -ErrorAction SilentlyContinue }
 }
 Write-Host "  Installed to: $TARGET_DIR"
+
+# Execute postinstall script to create openclaw SDK symlink
+# (upgrade-via-npm is pure file operation, npm install is not run, so postinstall won't trigger automatically)
+$PostinstallScript = Join-Path $TARGET_DIR "scripts" "postinstall-link-sdk.js"
+if (Test-Path $PostinstallScript) {
+    Write-Host "  Running postinstall: creating openclaw SDK symlink..."
+    try {
+        Push-Location $TARGET_DIR
+        $postOutput = & node $PostinstallScript 2>&1
+        Pop-Location
+        if ($postOutput) { Write-Host "  $postOutput" }
+    } catch {
+        Write-Host "  [WARN] postinstall script failed (non-fatal)" -ForegroundColor Yellow
+        try { Pop-Location } catch {}
+    }
+    # Verify symlink creation
+    $symlinkPath = Join-Path $TARGET_DIR "node_modules" "openclaw"
+    if (Test-Path $symlinkPath) {
+        Write-Host "  [OK] openclaw SDK symlink ready"
+    } else {
+        Write-Host "  [WARN] openclaw SDK symlink not created, attempting manual fallback..." -ForegroundColor Yellow
+        $cliDataDir = Split-Path $EXTENSIONS_DIR -Parent
+        $cliName = (Split-Path $cliDataDir -Leaf) -replace '^\.',''
+        try {
+            $globalRoot = (& npm root -g 2>$null).Trim()
+            $globalPkg = Join-Path $globalRoot $cliName
+            if ($globalRoot -and (Test-Path $globalPkg)) {
+                $nmDir = Join-Path $TARGET_DIR "node_modules"
+                if (-not (Test-Path $nmDir)) { New-Item -ItemType Directory -Path $nmDir -Force | Out-Null }
+                New-Item -ItemType Junction -Path $symlinkPath -Target $globalPkg -Force | Out-Null
+                Write-Host "  [OK] Manual symlink created: -> $globalPkg"
+            } else {
+                Write-Host "  [ERROR] Cannot locate global $cliName installation (npm root -g: $globalRoot)" -ForegroundColor Red
+            }
+        } catch {
+            Write-Host "  [ERROR] Manual symlink creation also failed: $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+} else {
+    Write-Host "  [WARN] postinstall script not found, skipping symlink creation" -ForegroundColor Yellow
+}
 
 # [4/5] Verify installation
 Write-Host ""

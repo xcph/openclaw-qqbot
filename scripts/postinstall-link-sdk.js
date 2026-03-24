@@ -10,7 +10,7 @@
 // globally installed openclaw package, allowing Node's native ESM resolver
 // (used by jiti with tryNative:true for .js files) to find `openclaw/plugin-sdk`.
 
-import { existsSync, symlinkSync, mkdirSync, readlinkSync } from "node:fs";
+import { existsSync, symlinkSync, mkdirSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
@@ -18,8 +18,9 @@ import { execSync } from "node:child_process";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pluginRoot = resolve(__dirname, "..");
 
-// Only run when installed under .openclaw/extensions/
-if (!pluginRoot.includes(".openclaw") && !pluginRoot.includes("extensions")) {
+// Only run when installed under an openclaw-like extensions directory
+// (supports openclaw, clawdbot, moltbot, etc.)
+if (!pluginRoot.includes("extensions")) {
   process.exit(0);
 }
 
@@ -30,37 +31,83 @@ if (existsSync(linkTarget)) {
   process.exit(0);
 }
 
+// CLI names to try (openclaw and its aliases)
+const CLI_NAMES = ["openclaw", "clawdbot", "moltbot"];
+
 // Find the global openclaw installation
 let openclawRoot = null;
-try {
-  // Try require.resolve from global context
-  const globalRoot = execSync("npm root -g", { encoding: "utf-8" }).trim();
-  const candidate = join(globalRoot, "openclaw");
-  if (existsSync(join(candidate, "package.json"))) {
-    openclawRoot = candidate;
-  }
-} catch {}
 
+// Strategy 1: npm root -g → look for any known CLI package name
 if (!openclawRoot) {
   try {
-    // Try resolving from the openclaw CLI binary
-    const bin = execSync("which openclaw", { encoding: "utf-8" }).trim();
-    // bin is typically <prefix>/bin/openclaw -> ../lib/node_modules/openclaw/...
-    const candidate = resolve(dirname(bin), "..", "lib", "node_modules", "openclaw");
-    if (existsSync(join(candidate, "package.json"))) {
-      openclawRoot = candidate;
+    const globalRoot = execSync("npm root -g", { encoding: "utf-8" }).trim();
+    for (const name of CLI_NAMES) {
+      const candidate = join(globalRoot, name);
+      if (existsSync(join(candidate, "package.json"))) {
+        openclawRoot = candidate;
+        break;
+      }
     }
   } catch {}
 }
 
+// Strategy 2: resolve from the CLI binary (which openclaw / clawdbot / moltbot)
+if (!openclawRoot) {
+  const whichCmd = process.platform === "win32" ? "where" : "which";
+  for (const name of CLI_NAMES) {
+    try {
+      const bin = execSync(`${whichCmd} ${name}`, { encoding: "utf-8" }).trim().split("\n")[0];
+      if (!bin) continue;
+      // Resolve symlinks to get actual binary location
+      const realBin = realpathSync(bin);
+      // bin is typically <prefix>/bin/<name> -> ../lib/node_modules/<name>/...
+      const candidate = resolve(dirname(realBin), "..", "lib", "node_modules", name);
+      if (existsSync(join(candidate, "package.json"))) {
+        openclawRoot = candidate;
+        break;
+      }
+      // Also try: binary might be inside the package itself (e.g. .../node_modules/<name>/bin/<name>)
+      const candidate2 = resolve(dirname(realBin), "..");
+      if (existsSync(join(candidate2, "package.json")) && existsSync(join(candidate2, "plugin-sdk"))) {
+        openclawRoot = candidate2;
+        break;
+      }
+    } catch {}
+  }
+}
+
+// Strategy 3: walk up from the extensions directory to find the CLI's data root,
+// then look for a global node_modules sibling
+if (!openclawRoot) {
+  // pluginRoot is like /home/user/.openclaw/extensions/openclaw-qqbot
+  // The CLI data dir is /home/user/.openclaw (or .clawdbot, .moltbot)
+  const extensionsDir = dirname(pluginRoot);
+  const dataDir = dirname(extensionsDir);
+  const dataDirName = dataDir.split("/").pop() || dataDir.split("\\").pop() || "";
+  // dataDirName is like ".openclaw" → strip the dot to get "openclaw"
+  const cliName = dataDirName.replace(/^\./, "");
+  if (cliName) {
+    try {
+      const globalRoot = execSync("npm root -g", { encoding: "utf-8" }).trim();
+      const candidate = join(globalRoot, cliName);
+      if (existsSync(join(candidate, "package.json"))) {
+        openclawRoot = candidate;
+      }
+    } catch {}
+  }
+}
+
 if (!openclawRoot) {
   // Not fatal — plugin may work if openclaw loads it with proper alias resolution
+  // But log a warning so upgrade scripts can detect the failure
+  console.error("[postinstall-link-sdk] WARNING: could not find openclaw/clawdbot/moltbot global installation, symlink not created");
   process.exit(0);
 }
 
 try {
   mkdirSync(join(pluginRoot, "node_modules"), { recursive: true });
   symlinkSync(openclawRoot, linkTarget, "junction");
-} catch {
-  // Silently ignore — symlink creation may fail on some systems
+  console.log(`[postinstall-link-sdk] symlink created: node_modules/openclaw -> ${openclawRoot}`);
+} catch (e) {
+  console.error(`[postinstall-link-sdk] WARNING: symlink creation failed: ${e.message}`);
 }
