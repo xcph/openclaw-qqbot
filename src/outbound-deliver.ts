@@ -123,15 +123,24 @@ export async function parseAndSendMediaTags(
       await sendTextChunks(item.content, event, actx, sendWithRetry, consumeQuoteRef);
     } else if (item.type === "image") {
       const result = await sendPhoto(mediaTarget, item.content);
-      if (result.error) log?.error(`${prefix} sendPhoto error: ${result.error}`);
+      if (result.error) {
+        log?.error(`${prefix} sendPhoto error: ${result.error}`);
+        await sendTextChunks(`发送图片失败：${result.error}`, event, actx, sendWithRetry, consumeQuoteRef);
+      }
     } else if (item.type === "voice") {
       await sendVoiceWithTimeout(mediaTarget, item.content, account, log, prefix);
     } else if (item.type === "video") {
       const result = await sendVideoMsg(mediaTarget, item.content);
-      if (result.error) log?.error(`${prefix} sendVideoMsg error: ${result.error}`);
+      if (result.error) {
+        log?.error(`${prefix} sendVideoMsg error: ${result.error}`);
+        await sendTextChunks(`发送视频失败：${result.error}`, event, actx, sendWithRetry, consumeQuoteRef);
+      }
     } else if (item.type === "file") {
       const result = await sendDocument(mediaTarget, item.content);
-      if (result.error) log?.error(`${prefix} sendDocument error: ${result.error}`);
+      if (result.error) {
+        log?.error(`${prefix} sendDocument error: ${result.error}`);
+        await sendTextChunks(result.error, event, actx, sendWithRetry, consumeQuoteRef);
+      }
     } else if (item.type === "media") {
       const result = await sendMediaAuto({
         to: actx.qualifiedTarget,
@@ -141,7 +150,10 @@ export async function parseAndSendMediaTags(
         replyToId: event.messageId,
         account,
       });
-      if (result.error) log?.error(`${prefix} sendMedia(auto) error: ${result.error}`);
+      if (result.error) {
+        log?.error(`${prefix} sendMedia(auto) error: ${result.error}`);
+        await sendTextChunks(result.error, event, actx, sendWithRetry, consumeQuoteRef);
+      }
     }
   }
 
@@ -171,6 +183,23 @@ export async function sendPlainReply(
 ): Promise<void> {
   const { account, qualifiedTarget, log } = actx;
   const prefix = `[qqbot:${account.accountId}]`;
+
+  // 预去重：把 payload 自带的媒体 URL 从 toolMediaUrls 中移除，
+  // 防止同一个文件既被 payload.mediaUrl/mediaUrls 发送，又被 toolMediaUrls 重复发送
+  if (toolMediaUrls.length > 0) {
+    const payloadUrls = new Set<string>();
+    if (payload.mediaUrl) payloadUrls.add(payload.mediaUrl);
+    if (payload.mediaUrls) for (const u of payload.mediaUrls) payloadUrls.add(u);
+    if (payloadUrls.size > 0) {
+      const before = toolMediaUrls.length;
+      const filtered = toolMediaUrls.filter(url => !payloadUrls.has(url));
+      if (filtered.length < before) {
+        log?.info(`${prefix} Pre-dedup: removed ${before - filtered.length} payload media URL(s) from toolMediaUrls`);
+        toolMediaUrls.length = 0;
+        toolMediaUrls.push(...filtered);
+      }
+    }
+  }
 
   const collectedImageUrls: string[] = [];
   const localMediaToSend: string[] = [];
@@ -250,27 +279,43 @@ export async function sendPlainReply(
           to: qualifiedTarget, text: "", mediaUrl: mediaPath,
           accountId: account.accountId, replyToId: event.messageId, account,
         });
-        if (result.error) log?.error(`${prefix} sendMedia(auto) error for ${mediaPath}: ${result.error}`);
-        else log?.info(`${prefix} Sent local media: ${mediaPath}`);
+        if (result.error) {
+          log?.error(`${prefix} sendMedia(auto) error for ${mediaPath}: ${result.error}`);
+          await sendTextChunks(result.error, event, actx, sendWithRetry, consumeQuoteRef);
+        } else {
+          log?.info(`${prefix} Sent local media: ${mediaPath}`);
+        }
       } catch (err) {
         log?.error(`${prefix} sendMedia(auto) failed for ${mediaPath}: ${err}`);
+        await sendTextChunks(`发送媒体失败：${err}`, event, actx, sendWithRetry, consumeQuoteRef);
       }
     }
   }
 
-  // 转发 tool 阶段收集的媒体
+  // 转发 tool 阶段收集的媒体（去重：跳过已在 localMediaToSend 或 collectedImageUrls 中发送过的路径）
   if (toolMediaUrls.length > 0) {
-    log?.info(`${prefix} Forwarding ${toolMediaUrls.length} tool-collected media URL(s) after block deliver`);
-    for (const mediaUrl of toolMediaUrls) {
-      try {
-        const result = await sendMediaAuto({
-          to: qualifiedTarget, text: "", mediaUrl,
-          accountId: account.accountId, replyToId: event.messageId, account,
-        });
-        if (result.error) log?.error(`${prefix} Tool media forward error: ${result.error}`);
-        else log?.info(`${prefix} Forwarded tool media: ${mediaUrl.slice(0, 80)}...`);
-      } catch (err) {
-        log?.error(`${prefix} Tool media forward failed: ${err}`);
+    const alreadySent = new Set([...localMediaToSend, ...collectedImageUrls]);
+    const dedupedToolMedia = toolMediaUrls.filter(url => !alreadySent.has(url));
+    if (dedupedToolMedia.length < toolMediaUrls.length) {
+      log?.info(`${prefix} Deduped tool media: ${toolMediaUrls.length} → ${dedupedToolMedia.length} (skipped ${toolMediaUrls.length - dedupedToolMedia.length} already sent via localMedia/collectedImages)`);
+    }
+    if (dedupedToolMedia.length > 0) {
+      log?.info(`${prefix} Forwarding ${dedupedToolMedia.length} tool-collected media URL(s) after block deliver`);
+      for (const mediaUrl of dedupedToolMedia) {
+        try {
+          const result = await sendMediaAuto({
+            to: qualifiedTarget, text: "", mediaUrl,
+            accountId: account.accountId, replyToId: event.messageId, account,
+          });
+          if (result.error) {
+            log?.error(`${prefix} Tool media forward error: ${result.error}`);
+            await sendTextChunks(result.error, event, actx, sendWithRetry, consumeQuoteRef);
+          } else {
+            log?.info(`${prefix} Forwarded tool media: ${mediaUrl.slice(0, 80)}...`);
+          }
+        } catch (err) {
+          log?.error(`${prefix} Tool media forward failed: ${err}`);
+        }
       }
     }
     toolMediaUrls.length = 0;
@@ -523,10 +568,15 @@ async function sendPlainTextReply(
     for (const imageUrl of imageUrls) {
       try {
         const imgResult = await sendPhoto(imgMediaTarget, imageUrl);
-        if (imgResult.error) log?.error(`${prefix} Failed to send image: ${imgResult.error}`);
-        else log?.info(`${prefix} Sent image via sendPhoto: ${imageUrl.slice(0, 80)}...`);
+        if (imgResult.error) {
+          log?.error(`${prefix} Failed to send image: ${imgResult.error}`);
+          await sendTextChunks(`发送图片失败：${imgResult.error}`, event, actx, sendWithRetry, consumeQuoteRef);
+        } else {
+          log?.info(`${prefix} Sent image via sendPhoto: ${imageUrl.slice(0, 80)}...`);
+        }
       } catch (imgErr) {
         log?.error(`${prefix} Failed to send image: ${imgErr}`);
+        await sendTextChunks(`发送图片失败：${imgErr}`, event, actx, sendWithRetry, consumeQuoteRef);
       }
     }
 

@@ -546,6 +546,8 @@ if [ -n "$DESIRED_QQBOT_TOKEN" ]; then
         # 由 channel 插件热重载处理，通常 <1 秒完成，无需长时间等待。
         sleep 1
     fi
+
+
 else
     # 未提供任何可用 token 时，检查是否已有可用配置
     _has_channel=0

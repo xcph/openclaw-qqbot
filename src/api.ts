@@ -51,7 +51,6 @@ export function onMessageSent(callback: OnMessageSentCallback): void {
 
 /**
  * 初始化 API 配置
- * @param options.markdownSupport - 是否支持 markdown 消息（默认 false，需要机器人具备该权限才能启用）
  */
 export function initApiConfig(options: { markdownSupport?: boolean }): void {
   currentMarkdownSupport = options.markdownSupport === true;
@@ -366,6 +365,40 @@ async function apiRequestWithRetry<T = unknown>(
   throw lastError!;
 }
 
+// ============ 完成上传重试（无条件，任何错误都重试） ============
+
+const COMPLETE_UPLOAD_MAX_RETRIES = 2;
+const COMPLETE_UPLOAD_BASE_DELAY_MS = 2000;
+
+/**
+ * 完成上传专用重试：无条件重试所有错误（包括 4xx、5xx、网络错误、超时等）
+ * 分片上传完成接口的失败往往是平台侧异步处理未就绪，重试通常能成功
+ */
+async function completeUploadWithRetry(
+  accessToken: string,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<MediaUploadResponse> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= COMPLETE_UPLOAD_MAX_RETRIES; attempt++) {
+    try {
+      return await apiRequest<MediaUploadResponse>(accessToken, method, path, body);
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+
+      if (attempt < COMPLETE_UPLOAD_MAX_RETRIES) {
+        const delay = COMPLETE_UPLOAD_BASE_DELAY_MS * Math.pow(2, attempt);
+        console.warn(`[qqbot-api] CompleteUpload attempt ${attempt + 1} failed, retrying in ${delay}ms: ${lastError.message.slice(0, 200)}`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  throw lastError!;
+}
+
 export async function getGatewayUrl(accessToken: string): Promise<string> {
   const data = await apiRequest<{ url: string }>(accessToken, "GET", "/gateway");
   return data.url;
@@ -546,6 +579,168 @@ export interface UploadMediaResponse {
   file_info: string;
   ttl: number;
   id?: string;
+}
+
+// ============ 大文件分片上传 API ============
+
+/** 分片信息 */
+export interface UploadPart {
+  /** 分片索引（从 1 开始） */
+  index: number;
+  /** 预签名上传链接 */
+  presigned_url: string;
+}
+
+/** 申请上传响应 */
+export interface UploadPrepareResponse {
+  /** 上传任务 ID */
+  upload_id: string;
+  /** 分块大小（字节） */
+  block_size: number;
+  /** 分片列表（含预签名链接） */
+  parts: UploadPart[];
+}
+
+/** 完成文件上传响应（与 UploadMediaResponse 一致） */
+export interface MediaUploadResponse {
+  /** 文件 UUID */
+  file_uuid: string;
+  /** 文件信息（用于发送消息），是 InnerUploadRsp 的序列化 */
+  file_info: string;
+  /** 文件信息过期时长（秒） */
+  ttl: number;
+}
+
+/** 申请上传时的文件哈希信息 */
+export interface UploadPrepareHashes {
+  /** 整个文件的 MD5（十六进制） */
+  md5: string;
+  /** 整个文件的 SHA1（十六进制） */
+  sha1: string;
+  /** 文件前 10002432 Bytes 的 MD5（十六进制）；文件不足该大小时为整文件 MD5 */
+  md5_10m: string;
+}
+
+/**
+ * 申请上传（C2C）
+ * POST /v2/users/{user_id}/upload_prepare
+ * 
+ * @param accessToken - 访问令牌
+ * @param userId - 用户 openid
+ * @param fileType - 业务类型（1=图片, 2=视频, 3=语音, 4=文件）
+ * @param fileName - 文件名
+ * @param fileSize - 文件大小（字节）
+ * @param hashes - 文件哈希信息（md5, sha1, md5_10m）
+ * @returns 上传任务 ID、分块大小、分片预签名链接列表
+ */
+export async function c2cUploadPrepare(
+  accessToken: string,
+  userId: string,
+  fileType: MediaFileType,
+  fileName: string,
+  fileSize: number,
+  hashes: UploadPrepareHashes,
+): Promise<UploadPrepareResponse> {
+  return apiRequest<UploadPrepareResponse>(
+    accessToken, "POST", `/v2/users/${userId}/upload_prepare`,
+    { file_type: fileType, file_name: fileName, file_size: fileSize, md5: hashes.md5, sha1: hashes.sha1, md5_10m: hashes.md5_10m },
+  );
+}
+
+/**
+ * 完成分片上传（C2C）
+ * POST /v2/users/{user_id}/upload_part_finish
+ * 
+ * @param accessToken - 访问令牌
+ * @param userId - 用户 openid
+ * @param uploadId - 上传任务 ID
+ * @param partIndex - 分片索引（从 1 开始）
+ * @param blockSize - 分块大小（字节）
+ * @param md5 - 分片数据的 MD5（十六进制）
+ */
+export async function c2cUploadPartFinish(
+  accessToken: string,
+  userId: string,
+  uploadId: string,
+  partIndex: number,
+  blockSize: number,
+  md5: string,
+): Promise<void> {
+  await apiRequest<Record<string, unknown>>(
+    accessToken, "POST", `/v2/users/${userId}/upload_part_finish`,
+    { upload_id: uploadId, part_index: partIndex, block_size: blockSize, md5 },
+  );
+}
+
+/**
+ * 完成文件上传（C2C）
+ * POST /v2/users/{user_id}/files
+ * 
+ * @param accessToken - 访问令牌
+ * @param userId - 用户 openid
+ * @param uploadId - 上传任务 ID
+ * @returns 文件信息（file_uuid, file_info, ttl）
+ */
+export async function c2cCompleteUpload(
+  accessToken: string,
+  userId: string,
+  uploadId: string,
+): Promise<MediaUploadResponse> {
+  return completeUploadWithRetry(
+    accessToken, "POST", `/v2/users/${userId}/files`,
+    { upload_id: uploadId },
+  );
+}
+
+/**
+ * 申请上传（Group）
+ * POST /v2/groups/{group_id}/upload_prepare
+ */
+export async function groupUploadPrepare(
+  accessToken: string,
+  groupId: string,
+  fileType: MediaFileType,
+  fileName: string,
+  fileSize: number,
+  hashes: UploadPrepareHashes,
+): Promise<UploadPrepareResponse> {
+  return apiRequest<UploadPrepareResponse>(
+    accessToken, "POST", `/v2/groups/${groupId}/upload_prepare`,
+    { file_type: fileType, file_name: fileName, file_size: fileSize, md5: hashes.md5, sha1: hashes.sha1, md5_10m: hashes.md5_10m },
+  );
+}
+
+/**
+ * 完成分片上传（Group）
+ * POST /v2/groups/{group_id}/upload_part_finish
+ */
+export async function groupUploadPartFinish(
+  accessToken: string,
+  groupId: string,
+  uploadId: string,
+  partIndex: number,
+  blockSize: number,
+  md5: string,
+): Promise<void> {
+  await apiRequest<Record<string, unknown>>(
+    accessToken, "POST", `/v2/groups/${groupId}/upload_part_finish`,
+    { upload_id: uploadId, part_index: partIndex, block_size: blockSize, md5 },
+  );
+}
+
+/**
+ * 完成文件上传（Group）
+ * POST /v2/groups/{group_id}/files
+ */
+export async function groupCompleteUpload(
+  accessToken: string,
+  groupId: string,
+  uploadId: string,
+): Promise<MediaUploadResponse> {
+  return completeUploadWithRetry(
+    accessToken, "POST", `/v2/groups/${groupId}/files`,
+    { upload_id: uploadId },
+  );
 }
 
 export async function uploadC2CMedia(

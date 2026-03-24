@@ -519,7 +519,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         }
         
         // 处理附件（图片等）- 下载到本地供 openclaw 访问
-        const processed = await processAttachments(event.attachments, { accountId: account.accountId, cfg, log });
+        const processed = await processAttachments(event.attachments, { appId: account.appId, peerId, cfg, log });
         const { attachmentInfo, imageUrls, imageMediaTypes, voiceAttachmentPaths, voiceAttachmentUrls, voiceAsrReferTexts, voiceTranscripts, voiceTranscriptSources, attachmentLocalPaths } = processed;
         
         // 语音转录文本注入到用户消息中
@@ -788,6 +788,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           const toolTexts: string[] = []; // 收集所有 tool deliver 文本
           const toolMediaUrls: string[] = []; // 收集所有 tool deliver 媒体 URL
           let toolFallbackSent = false; // 兜底消息是否已发送（只发一次）
+          const blockDeliveredMediaUrls = new Set<string>(); // block deliver 已处理的 mediaUrl，用于 tool 后到时去重
           const responseTimeout = 120000; // 120秒超时（2分钟，与 TTS/文件生成超时对齐）
           const toolOnlyTimeout = 60000; // tool-only 兜底超时：60秒内没有 block 就兜底
           const maxToolRenewals = 3; // tool 续期上限：最多续期 3 次（总等待 = 60s × 3 = 180s）
@@ -876,9 +877,15 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
                   // block 已先发送完毕，tool 后到的媒体立即转发（典型场景：AI 先流式输出文本再执行 TTS）
                   if (hasBlockResponse && toolMediaUrls.length > 0) {
-                    log?.info(`[qqbot:${account.accountId}] Block already sent, immediately forwarding ${toolMediaUrls.length} tool media URL(s)`);
-                    const urlsToSend = [...toolMediaUrls];
+                    // 去重：跳过已被 block deliver 的 sendPlainReply 处理过的 URL
+                    const urlsToSend = toolMediaUrls.filter(url => !blockDeliveredMediaUrls.has(url));
+                    const skippedCount = toolMediaUrls.length - urlsToSend.length;
                     toolMediaUrls.length = 0;
+                    if (urlsToSend.length === 0) {
+                      log?.info(`[qqbot:${account.accountId}] All ${skippedCount} tool media URL(s) already handled by block deliver, skipping`);
+                      return;
+                    }
+                    log?.info(`[qqbot:${account.accountId}] Block already sent, immediately forwarding ${urlsToSend.length} tool media URL(s) (deduped from block deliver)`);
                     for (const mediaUrl of urlsToSend) {
                       try {
                         const result = await sendMediaAuto({
@@ -998,6 +1005,10 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   if (handled) return;
 
                   // ============ 非结构化消息发送 ============
+                  // 记录 block deliver 处理的 mediaUrl，供 tool 后到时去重
+                  if (deliverPayload.mediaUrl) blockDeliveredMediaUrls.add(deliverPayload.mediaUrl);
+                  if (deliverPayload.mediaUrls) for (const u of deliverPayload.mediaUrls) blockDeliveredMediaUrls.add(u);
+
                   await sendPlainReply(
                     deliverPayload, replyText, deliverEvent, deliverActx,
                     sendWithRetry, consumeQuoteRef, toolMediaUrls,
