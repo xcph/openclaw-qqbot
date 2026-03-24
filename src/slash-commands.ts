@@ -20,16 +20,10 @@ import { getUpdateInfo, checkVersionExists } from "./update-checker.js";
 import { getHomeDir, getQQBotDataDir, isWindows } from "./utils/platform.js";
 import { saveCredentialBackup } from "./credential-backup.js";
 import { fileURLToPath } from "node:url";
+import { getPackageVersion } from "./utils/pkg-version.js";
 const require = createRequire(import.meta.url);
 
-// 读取 package.json 中的版本号
-let PLUGIN_VERSION = "unknown";
-try {
-  const pkg = require("../package.json");
-  PLUGIN_VERSION = pkg.version ?? "unknown";
-} catch {
-  // fallback
-}
+let PLUGIN_VERSION = getPackageVersion(import.meta.url);
 
 // 获取 openclaw 框架版本（缓存结果，只执行一次）
 let _frameworkVersion: string | null = null;

@@ -273,6 +273,7 @@ Write-Host "  [OK] All preflight checks passed"
 # [3/5] Replace plugin directory (in-place overwrite to avoid file-lock issues)
 Write-Host ""
 Write-Host "[3/5] Replacing plugin directory..."
+if (-not (Test-Path $EXTENSIONS_DIR)) { New-Item -ItemType Directory -Path $EXTENSIONS_DIR -Force | Out-Null }
 $TARGET_DIR = Join-Path $EXTENSIONS_DIR "openclaw-qqbot"
 
 if (-not (Test-Path $TARGET_DIR)) {

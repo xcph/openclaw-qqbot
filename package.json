@@ -1,6 +1,6 @@
 {
   "name": "@tencent-connect/openclaw-qqbot",
-  "version": "1.6.5-alpha.2",
+  "version": "1.6.5-alpha.4",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -22,7 +22,11 @@
     "id": "openclaw-qqbot",
     "extensions": [
       "./dist/index.js"
-    ]
+    ],
+    "channel": {
+      "id": "qqbot",
+      "label": "QQ Bot"
+    }
   },
   "scripts": {
     "build": "tsc || true",
