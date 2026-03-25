@@ -31,7 +31,7 @@ import {
 import { formatFileSize } from "./file-utils.js";
 
 /** 分片上传并发控制：最多同时上传 N 个分片 */
-const MAX_CONCURRENT_PARTS = 5;
+const MAX_CONCURRENT_PARTS = 2;
 
 /** 单个分片上传超时（毫秒）— 5 分钟，兼容低带宽场景 */
 const PART_UPLOAD_TIMEOUT = 300_000;
@@ -55,7 +55,7 @@ export interface ChunkedUploadProgress {
 export interface ChunkedUploadOptions {
   /** 进度回调 */
   onProgress?: (progress: ChunkedUploadProgress) => void;
-  /** 最大并发数（默认 5） */
+  /** 最大并发数（默认 2） */
   maxConcurrent?: number;
   /** 日志前缀 */
   logPrefix?: string;

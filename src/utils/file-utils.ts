@@ -9,9 +9,9 @@ import crypto from "node:crypto";
 /** QQ Bot API 各类型文件上传大小限制（QQ 机器人上行） */
 export const UPLOAD_SIZE_LIMITS: Record<number, number> = {
   1: 30 * 1024 * 1024,   // IMAGE:  30MB
-  2: 200 * 1024 * 1024,  // VIDEO:  200MB
+  2: 100 * 1024 * 1024,  // VIDEO:  100MB
   3: 20 * 1024 * 1024,   // VOICE:  20MB
-  4: 200 * 1024 * 1024,  // FILE:   200MB
+  4: 100 * 1024 * 1024,  // FILE:   100MB
 };
 
 /** 文件类型中文名映射 */
@@ -27,13 +27,13 @@ export function getFileTypeName(fileType: number): string {
   return FILE_TYPE_NAMES[fileType] ?? "文件";
 }
 
-/** 获取指定文件类型的上传大小限制；未知类型默认 200MB */
+/** 获取指定文件类型的上传大小限制；未知类型默认 100MB */
 export function getMaxUploadSize(fileType: number): number {
-  return UPLOAD_SIZE_LIMITS[fileType] ?? 200 * 1024 * 1024;
+  return UPLOAD_SIZE_LIMITS[fileType] ?? 100 * 1024 * 1024;
 }
 
 /** @deprecated 使用 getMaxUploadSize(fileType) 代替 */
-export const MAX_UPLOAD_SIZE = 200 * 1024 * 1024;
+export const MAX_UPLOAD_SIZE = 100 * 1024 * 1024;
 
 /** 大文件阈值（超过此值发送进度提示）：5MB */
 export const LARGE_FILE_THRESHOLD = 5 * 1024 * 1024;
