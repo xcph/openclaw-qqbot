@@ -25,6 +25,7 @@ cd "$PROJ_DIR"
 APPID=""
 SECRET=""
 MARKDOWN=""
+STREAMING=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -40,6 +41,10 @@ while [[ $# -gt 0 ]]; do
             MARKDOWN="$2"
             shift 2
             ;;
+        --streaming)
+            STREAMING="$2"
+            shift 2
+            ;;
         -h|--help)
             echo "用法: $0 [选项]"
             echo ""
@@ -47,6 +52,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --appid <appid>       QQ机器人 appid"
             echo "  --secret <secret>     QQ机器人 secret"
             echo "  --markdown <yes|no>   是否启用 markdown 消息格式（默认: no）"
+            echo "  --streaming <yes|no>  是否启用流式消息（默认: no，仅 C2C 私聊）"
             echo "  -h, --help            显示帮助信息"
             echo ""
             echo "也可以通过环境变量设置:"
@@ -54,6 +60,7 @@ while [[ $# -gt 0 ]]; do
             echo "  QQBOT_SECRET          QQ机器人 secret"
             echo "  QQBOT_TOKEN           QQ机器人 token (appid:secret)"
             echo "  QQBOT_MARKDOWN        是否启用 markdown（yes/no）"
+            echo "  QQBOT_STREAMING       是否启用流式消息（yes/no）"
             echo ""
             echo "不带参数时，将使用已有配置直接启动。"
             echo ""
@@ -72,6 +79,7 @@ done
 APPID="${APPID:-$QQBOT_APPID}"
 SECRET="${SECRET:-$QQBOT_SECRET}"
 MARKDOWN="${MARKDOWN:-$QQBOT_MARKDOWN}"
+STREAMING="${STREAMING:-$QQBOT_STREAMING}"
 
 echo "========================================="
 echo "  qqbot 一键更新启动脚本"
@@ -129,6 +137,29 @@ if [ -z "$SAVED_QQBOT_TOKEN" ] && [ -d "$HOME/.openclaw" ]; then
     if [ -n "$SAVED_QQBOT_TOKEN" ]; then
         echo "已从 ~/.openclaw/openclaw.json.bak* 找到 qqbot 备份 token: ${SAVED_QQBOT_TOKEN:0:10}..."
     fi
+fi
+
+# 备份 streaming 配置（升级后恢复）
+SAVED_STREAMING=""
+for _app in openclaw clawdbot moltbot; do
+    _cfg="$HOME/.$_app/$_app.json"
+    if [ -f "$_cfg" ]; then
+        SAVED_STREAMING=$(node -e "
+            const cfg = JSON.parse(require('fs').readFileSync('$_cfg', 'utf8'));
+            const keys = ['qqbot', 'openclaw-qqbot', 'openclaw-qq'];
+            for (const key of keys) {
+                const ch = cfg.channels && cfg.channels[key];
+                if (ch && typeof ch.streaming === 'boolean') {
+                    process.stdout.write(String(ch.streaming));
+                    process.exit(0);
+                }
+            }
+        " 2>/dev/null || true)
+        [ -n "$SAVED_STREAMING" ] && break
+    fi
+done
+if [ -n "$SAVED_STREAMING" ]; then
+    echo "已备份 streaming 配置: $SAVED_STREAMING"
 fi
 
 # 2. 移除老版本
@@ -633,6 +664,69 @@ if [ -n "$MARKDOWN" ]; then
     fi
 else
     echo "未指定 markdown 选项，使用已有配置"
+fi
+
+# 5.5. 配置 streaming 选项
+echo ""
+echo "[5.5/6] 配置 streaming（流式消息）选项..."
+
+# 确定目标 streaming 值：命令行参数 > 备份值
+STREAMING_VALUE=""
+if [ -n "$STREAMING" ]; then
+    if [ "$STREAMING" = "yes" ] || [ "$STREAMING" = "y" ] || [ "$STREAMING" = "true" ]; then
+        STREAMING_VALUE="true"
+        echo "启用流式消息..."
+    else
+        STREAMING_VALUE="false"
+        echo "禁用流式消息..."
+    fi
+elif [ -n "$SAVED_STREAMING" ]; then
+    STREAMING_VALUE="$SAVED_STREAMING"
+    echo "从备份恢复 streaming 配置: $SAVED_STREAMING"
+fi
+
+if [ -n "$STREAMING_VALUE" ]; then
+    CURRENT_STREAMING_VALUE=$(node -e "
+      const fs = require('fs');
+      const path = require('path');
+      const home = process.env.HOME;
+      for (const app of ['openclaw', 'clawdbot', 'moltbot']) {
+        const f = path.join(home, '.' + app, app + '.json');
+        if (!fs.existsSync(f)) continue;
+        try {
+          const cfg = JSON.parse(fs.readFileSync(f, 'utf8'));
+          const keys = ['qqbot', 'openclaw-qqbot', 'openclaw-qq'];
+          for (const key of keys) {
+            const ch = cfg.channels && cfg.channels[key];
+            if (!ch) continue;
+            if (typeof ch.streaming === 'boolean') { process.stdout.write(String(ch.streaming)); process.exit(0); }
+          }
+        } catch {}
+      }
+    " 2>/dev/null || true)
+
+    if [ "$CURRENT_STREAMING_VALUE" = "$STREAMING_VALUE" ]; then
+        echo "✅ streaming 配置已是目标值，跳过写入"
+    else
+        OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
+        if [ -f "$OPENCLAW_CONFIG" ] && node -e "
+          const fs = require('fs');
+          const cfg = JSON.parse(fs.readFileSync('$OPENCLAW_CONFIG', 'utf-8'));
+          if (!cfg.channels) cfg.channels = {};
+          if (!cfg.channels.qqbot) cfg.channels.qqbot = {};
+          const target = $STREAMING_VALUE;
+          if (cfg.channels.qqbot.streaming === target) process.exit(0);
+          cfg.channels.qqbot.streaming = target;
+          fs.writeFileSync('$OPENCLAW_CONFIG', JSON.stringify(cfg, null, 4) + '\n');
+        " 2>&1; then
+            echo "✅ streaming 配置成功"
+            _config_changed=1
+        else
+            echo "⚠️  streaming 配置设置失败，不影响后续运行"
+        fi
+    fi
+else
+    echo "未指定 streaming 选项且无备份值，使用默认配置"
 fi
 
 # 6. 启动 openclaw

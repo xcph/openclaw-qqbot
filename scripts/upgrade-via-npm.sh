@@ -24,6 +24,7 @@ INSTALL_SRC=""
 TARGET_VERSION=""
 APPID=""
 SECRET=""
+STREAMING=""
 NO_RESTART=false
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -50,6 +51,7 @@ print_usage() {
     echo ""
     echo "  --appid <appid>       QQ机器人 appid（首次安装时必填）"
     echo "  --secret <secret>     QQ机器人 secret（首次安装时必填）"
+    echo "  --streaming <yes|no>  是否启用流式消息（默认: no，仅 C2C 私聊）"
     echo ""
     echo "也可以通过环境变量设置:"
     echo "  QQBOT_APPID           QQ机器人 appid"
@@ -85,6 +87,11 @@ while [[ $# -gt 0 ]]; do
         --secret)
             [ -z "$2" ] && echo "❌ --secret 需要参数" && exit 1
             SECRET="$2"
+            shift 2
+            ;;
+        --streaming)
+            [ -z "$2" ] && echo "❌ --streaming 需要参数" && exit 1
+            STREAMING="$2"
             shift 2
             ;;
         --no-restart)
@@ -447,6 +454,34 @@ if [ -n "$APPID" ] && [ -n "$SECRET" ]; then
 elif [ -n "$APPID" ] || [ -n "$SECRET" ]; then
     echo ""
     echo "⚠️  --appid 和 --secret 必须同时提供"
+fi
+
+# [配置] streaming（流式消息）
+if [ -n "$STREAMING" ]; then
+    echo ""
+    echo "[配置] 写入 streaming（流式消息）配置..."
+    STREAMING_VALUE=""
+    if [ "$STREAMING" = "yes" ] || [ "$STREAMING" = "y" ] || [ "$STREAMING" = "true" ]; then
+        STREAMING_VALUE="true"
+    else
+        STREAMING_VALUE="false"
+    fi
+
+    CONFIG_FILE="$HOME/.$CMD/$CMD.json"
+    if [ -f "$CONFIG_FILE" ] && node -e "
+        const fs = require('fs');
+        const cfg = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf8'));
+        if (!cfg.channels) cfg.channels = {};
+        if (!cfg.channels.qqbot) cfg.channels.qqbot = {};
+        const target = $STREAMING_VALUE;
+        if (cfg.channels.qqbot.streaming === target) process.exit(0);
+        cfg.channels.qqbot.streaming = target;
+        fs.writeFileSync('$CONFIG_FILE', JSON.stringify(cfg, null, 4) + '\n');
+    " 2>&1; then
+        echo "  ✅ streaming 配置写入成功 (streaming=$STREAMING_VALUE)"
+    else
+        echo "  ⚠️  streaming 配置写入失败，不影响后续运行"
+    fi
 fi
 
 # [4/4] 重启 gateway 使新版本生效

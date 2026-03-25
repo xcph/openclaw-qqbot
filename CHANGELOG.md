@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.6.6] - 2026-03-25
+
+### Added
+
+- **Streaming messages (C2C)**: New `StreamingController` delivers AI responses as real-time typing-effect chunks in private chat. Includes throttle control (default 500ms, min 300ms), automatic media-tag pause/resume, long-gap batch window, state-machine lifecycle (`idle → streaming → completed/aborted`), and graceful fallback to static mode when the streaming API is unavailable.
+- **Stream message API `sendC2CStreamMessage`**: Low-level wrapper for QQ Open Platform `/v2/users/{openid}/stream_messages` endpoint, with `replace` input mode, incremental `msg_seq`/`index`, and `GENERATING`/`DONE` state signaling.
+- **`ApiError` structured error class**: API request errors now carry `status` (HTTP code) and `path`, enabling callers (e.g. streaming controller) to branch on status for retry vs. fallback decisions.
+- **Media send queue module `media-send.ts`**: Extracted media-tag parsing, path-encoding fix, and send-queue execution into a shared utility used by both `outbound.ts` (static mode) and `streaming.ts` (streaming mode), eliminating ~100 lines of duplication.
+- **Streaming configuration**: New `streaming` (boolean, default `true`) and `streamingConfig.throttleMs` options in account config for per-account streaming control.
+- **Unit tests**: Added `strip-incomplete-media-tag.test.ts` and `streaming-controller.test.ts`.
+
+### Changed
+
+- **Outbound media handling refactored**: `sendText` in `outbound.ts` now delegates media-tag parsing and queue execution to the shared `media-send.ts` module instead of inline regex + switch logic.
+- **Audio convert log level**: Downgraded `console.log` → `console.debug` for SILK detection, ffmpeg conversion, and WASM fallback logs in `audio-convert.ts`, reducing noise in production.
+- **Gateway streaming integration**: `gateway.ts` creates a `StreamingController` per inbound message when streaming is enabled; registers `onPartialReply` callback to feed incremental text into the controller; finalizes or aborts the stream after dispatch completes.
+
+### Removed
+
+- **`user-messages.ts`**: Deleted the already-emptied module (design: plugin layer does not generate user-facing error text).
+
 ## [1.6.5] - 2026-03-24
 
 ### OpenClaw 3.23 Compatibility
