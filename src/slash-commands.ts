@@ -1450,7 +1450,7 @@ registerCommand({
         const relativePath = path.relative(targetDir, f.filePath);
         // 在 Windows 上统一用 / 分隔显示
         const displayName = relativePath.replace(/\\/g, "/");
-        lines.push(`${displayName} ${formatBytes(f.size)}`, ``, ``);
+        lines.push(`${displayName} (${formatBytes(f.size)})`, ``, ``);
       }
       if (files.length > MAX_DISPLAY) {
         lines.push(`...[合计：${files.length} 个文件（${formatBytes(totalSize)}）]`, ``);
