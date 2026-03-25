@@ -4,6 +4,27 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [1.6.6] - 2026-03-25
+
+### 新增
+
+- **流式消息（C2C 私聊）**：新增 `StreamingController` 流式控制器，AI 回复以打字机效果实时逐步推送到 QQ 私聊。支持节流控制（默认 500ms，最小 300ms）、媒体标签自动暂停/恢复流式会话、长间隔批处理窗口、状态机生命周期管理（`idle → streaming → completed/aborted`），流式 API 不可用时自动降级为静态消息模式。
+- **流式消息 API `sendC2CStreamMessage`**：封装 QQ 开放平台 `/v2/users/{openid}/stream_messages` 接口，支持 `replace` 输入模式、递增 `msg_seq`/`index` 序号、`GENERATING`/`DONE` 状态信令。
+- **`ApiError` 结构化错误类**：API 请求错误现在携带 `status`（HTTP 状态码）和 `path`，使调用方（如流式控制器）可根据状态码决定重试或降级策略。
+- **媒体发送队列模块 `media-send.ts`**：将媒体标签解析、路径编码修复、发送队列执行器抽取为公共工具模块，供 `outbound.ts`（静态模式）和 `streaming.ts`（流式模式）共用，消除约 100 行重复代码。
+- **流式消息配置项**：账户配置新增 `streaming`（布尔值，默认 `true`）和 `streamingConfig.throttleMs` 选项，支持按账户控制流式消息开关和节流间隔。
+- **单元测试**：新增 `strip-incomplete-media-tag.test.ts` 和 `streaming-controller.test.ts`。
+
+### 变更
+
+- **出站媒体处理重构**：`outbound.ts` 中 `sendText` 的媒体标签解析和发送队列逻辑重构为调用公共 `media-send.ts` 模块，替代原有的内联正则 + switch 分支。
+- **音频转换日志降级**：`audio-convert.ts` 中 SILK 检测、ffmpeg 转换、WASM 降级等日志从 `console.log` 降为 `console.debug`，减少生产环境日志噪音。
+- **Gateway 流式集成**：`gateway.ts` 在流式启用时为每条入站消息创建 `StreamingController`；注册 `onPartialReply` 回调将增量文本馈入控制器；dispatch 完成后终结或中止流式会话。
+
+### 移除
+
+- **`user-messages.ts`**：删除已清空的模块（设计原则：插件层不生成面向用户的错误提示）。
+
 ## [1.6.5] - 2026-03-24
 
 ### OpenClaw 3.23 兼容适配

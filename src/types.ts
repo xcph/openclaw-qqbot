@@ -75,6 +75,15 @@ export interface QQBotAccountConfig {
    * 当短时间内收到多次 deliver 时，将文本合并为一条消息发送，避免消息轰炸
    */
   deliverDebounce?: DeliverDebounceConfig;
+  /**
+   * 是否启用流式消息（默认 false）
+   * 启用后，AI 的回复会以流式形式逐步显示在 QQ 聊天中，
+   * 用户可以看到文字逐字出现的打字机效果。
+   * 设置为 true 可开启流式消息。
+   * 
+   * 注意：仅 C2C（私聊）支持流式消息 API。
+   */
+  streaming?: boolean;
 }
 
 /**
@@ -211,4 +220,75 @@ export interface WSPayload {
   d?: unknown;
   s?: number;
   t?: string;
+}
+
+
+
+// ---- 流式消息常量 ----
+
+/** 流式消息输入模式 */
+export const StreamInputMode = {
+  /** 每次发送的 content_raw 替换整条消息内容 */
+  REPLACE: "replace",
+} as const;
+export type StreamInputMode = (typeof StreamInputMode)[keyof typeof StreamInputMode];
+
+/** 流式消息输入状态 */
+export const StreamInputState = {
+  /** 正文生成中 */
+  GENERATING: 1,
+  /** 正文生成结束（终结状态） */
+  DONE: 10,
+} as const;
+export type StreamInputState = (typeof StreamInputState)[keyof typeof StreamInputState];
+
+/** 流式消息内容类型 */
+export const StreamContentType = {
+  MARKDOWN: "markdown",
+} as const;
+export type StreamContentType = (typeof StreamContentType)[keyof typeof StreamContentType];
+
+/**
+ * 流式消息请求体
+ * 对应 StreamReq proto
+ */
+export interface StreamMessageRequest {
+  /** 输入模式 */
+  input_mode: StreamInputMode;
+  /** 输入状态 */
+  input_state: StreamInputState;
+  /** 内容类型 */
+  content_type: StreamContentType;
+  /** markdown 内容 */
+  content_raw: string;
+  /** 事件 ID */
+  event_id: string;
+  /** 原始消息 ID */
+  msg_id: string;
+  /** 流式消息 ID，首次发送后返回，后续分片需携带 */
+  stream_msg_id?: string;
+  /** 递增序号 */
+  msg_seq: number;
+  /** 同一条流式会话内的发送索引，从 0 开始，每次发送前递增；新流式会话重新从 0 开始 */
+  index: number;
+}
+
+/**
+ * 流式消息响应体
+ * 对应 StreamRsp proto
+ * 
+ * 成功时返回：{ id, timestamp, extInfo }（无 code/message）
+ * 失败时返回：{ code, message }（code > 0）
+ */
+export interface StreamMessageResponse {
+  /** 错误码，仅失败时存在（> 0 表示失败）；成功时不存在 */
+  code?: number;
+  /** 错误信息，仅失败时存在 */
+  message?: string;
+  /** 流式消息 ID */
+  id?: string;
+  /** 时间戳 */
+  timestamp?: string;
+  /** 扩展信息 */
+  extInfo?: Record<string, unknown>;
 }

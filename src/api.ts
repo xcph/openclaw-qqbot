@@ -7,6 +7,20 @@ import os from "node:os";
 import { computeFileHash, getCachedFileInfo, setCachedFileInfo } from "./utils/upload-cache.js";
 import { sanitizeFileName } from "./utils/platform.js";
 
+// ============ 自定义错误 ============
+
+/** API 请求错误，携带 HTTP status code */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly path: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 const API_BASE = "https://api.sgroup.qq.com";
 const TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken";
 
@@ -302,15 +316,15 @@ export async function apiRequest<T = unknown>(
         : res.status === 429
           ? "请求过于频繁，已被限流"
           : `开放平台返回 HTTP ${res.status}`;
-      throw new Error(`${statusHint}（${path}），请稍后重试`);
+      throw new ApiError(`${statusHint}（${path}），请稍后重试`, res.status, path);
     }
     // JSON 错误响应
     try {
       const error = JSON.parse(rawBody) as { message?: string; code?: number };
-      throw new Error(`API Error [${path}]: ${error.message ?? rawBody}`);
+      throw new ApiError(`API Error [${path}]: ${error.message ?? rawBody}`, res.status, path);
     } catch (parseErr) {
-      if (parseErr instanceof Error && parseErr.message.startsWith("API Error")) throw parseErr;
-      throw new Error(`API Error [${path}] HTTP ${res.status}: ${rawBody.slice(0, 200)}`);
+      if (parseErr instanceof ApiError) throw parseErr;
+      throw new ApiError(`API Error [${path}] HTTP ${res.status}: ${rawBody.slice(0, 200)}`, res.status, path);
     }
   }
 
@@ -1035,4 +1049,43 @@ async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       signal.addEventListener("abort", onAbort, { once: true });
     }
   });
+}
+
+// ============ 流式消息 API ============
+
+import type { StreamMessageRequest, StreamMessageResponse } from "./types.js";
+
+/**
+ * 发送流式消息（C2C 私聊）
+ * 
+ * 流式协议：
+ * - 首次调用时不传 stream_msg_id，由平台返回
+ * - 后续分片携带 stream_msg_id 和递增 msg_seq
+ * - input_state="1" 表示生成中，"10" 表示生成结束（终结状态）
+ * 
+ * @param accessToken - access_token
+ * @param openid - 用户 openid
+ * @param req - 流式消息请求体
+ * @returns 流式消息响应
+ */
+export async function sendC2CStreamMessage(
+  accessToken: string,
+  openid: string,
+  req: StreamMessageRequest,
+): Promise<StreamMessageResponse> {
+  const path = `/v2/users/${openid}/stream_messages`;
+  const body: Record<string, unknown> = {
+    input_mode: req.input_mode,
+    input_state: req.input_state,
+    content_type: req.content_type,
+    content_raw: req.content_raw,
+    event_id: req.event_id,
+    msg_id: req.msg_id,
+    msg_seq: req.msg_seq,
+    index: req.index,
+  };
+  if (req.stream_msg_id) {
+    body.stream_msg_id = req.stream_msg_id;
+  }
+  return apiRequest<StreamMessageResponse>(accessToken, "POST", path, body);
 }
