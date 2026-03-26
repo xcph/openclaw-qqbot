@@ -4,7 +4,7 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 
-## [1.6.7] - 2026-03-26
+## [1.6.6] - 2026-03-26
 
 ### 新增
 
@@ -16,17 +16,6 @@
 - **按钮交互事件**：处理按钮交互事件（配置查询、配置更新）。
 - **按群配置解析**：具体群 → 通配符 → 默认值的三级回退链。
 - **Agent 级别提及模式**：支持按 agent 配置不同的 @检测关键词。
-
-### 变更
-
-- **消息队列**：从用户维度改为对端维度，群聊和私聊独立队列上限。
-- **群消息发送**：新增消息引用支持和出站钩子。
-- **升级脚本**：延迟恢复通道配置以兼容 openclaw 3.23+。
-
-## [1.6.6] - 2026-03-25
-
-### 新增
-
 - **流式消息（C2C 私聊）**：新增 `StreamingController` 流式控制器，AI 回复以打字机效果实时逐步推送到 QQ 私聊。支持节流控制（默认 500ms，最小 300ms）、媒体标签自动暂停/恢复流式会话、长间隔批处理窗口、状态机生命周期管理（`idle → streaming → completed/aborted`），流式 API 不可用时自动降级为静态消息模式。
 - **流式消息 API `sendC2CStreamMessage`**：封装 QQ 开放平台 `/v2/users/{openid}/stream_messages` 接口，支持 `replace` 输入模式、递增 `msg_seq`/`index` 序号、`GENERATING`/`DONE` 状态信令。
 - **`ApiError` 结构化错误类**：API 请求错误现在携带 `status`（HTTP 状态码）和 `path`，使调用方（如流式控制器）可根据状态码决定重试或降级策略。
@@ -36,6 +25,9 @@
 
 ### 变更
 
+- **消息队列**：从用户维度改为对端维度，群聊和私聊独立队列上限。
+- **群消息发送**：新增消息引用支持和出站钩子。
+- **升级脚本**：延迟恢复通道配置以兼容 openclaw 3.23+。
 - **出站媒体处理重构**：`outbound.ts` 中 `sendText` 的媒体标签解析和发送队列逻辑重构为调用公共 `media-send.ts` 模块，替代原有的内联正则 + switch 分支。
 - **音频转换日志降级**：`audio-convert.ts` 中 SILK 检测、ffmpeg 转换、WASM 降级等日志从 `console.log` 降为 `console.debug`，减少生产环境日志噪音。
 - **Gateway 流式集成**：`gateway.ts` 在流式启用时为每条入站消息创建 `StreamingController`；注册 `onPartialReply` 回调将增量文本馈入控制器；dispatch 完成后终结或中止流式会话。
