@@ -22,6 +22,7 @@ import { TypingKeepAlive, TYPING_INPUT_SECOND } from "./typing-keepalive.js";
 import { parseAndSendMediaTags, sendPlainReply, type DeliverEventContext, type DeliverAccountContext } from "./outbound-deliver.js";
 import { createDeliverDebouncer, type DeliverDebouncer } from "./deliver-debounce.js";
 import { runWithRequestContext } from "./request-context.js";
+import { StreamingController, shouldUseStreaming } from "./streaming.js";
 
 // QQ Bot intents - 按权限级别分组
 const INTENTS = {
@@ -49,6 +50,7 @@ const QUICK_DISCONNECT_THRESHOLD = 5000; // 5秒内断开视为快速断开
 const IMAGE_SERVER_PORT = parseInt(process.env.QQBOT_IMAGE_SERVER_PORT || "18765", 10);
 // 使用绝对路径，确保文件保存和读取使用同一目录
 const IMAGE_SERVER_DIR = process.env.QQBOT_IMAGE_SERVER_DIR || getQQBotDataDir("images");
+
 
 export interface GatewayContext {
   account: ResolvedQQBotAccount;
@@ -519,7 +521,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         }
         
         // 处理附件（图片等）- 下载到本地供 openclaw 访问
-        const processed = await processAttachments(event.attachments, { accountId: account.accountId, cfg, log });
+        const processed = await processAttachments(event.attachments, { appId: account.appId, peerId, cfg, log });
         const { attachmentInfo, imageUrls, imageMediaTypes, voiceAttachmentPaths, voiceAttachmentUrls, voiceAsrReferTexts, voiceTranscripts, voiceTranscriptSources, attachmentLocalPaths } = processed;
         
         // 语音转录文本注入到用户消息中
@@ -788,6 +790,7 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           const toolTexts: string[] = []; // 收集所有 tool deliver 文本
           const toolMediaUrls: string[] = []; // 收集所有 tool deliver 媒体 URL
           let toolFallbackSent = false; // 兜底消息是否已发送（只发一次）
+          const blockDeliveredMediaUrls = new Set<string>(); // block deliver 已处理的 mediaUrl，用于 tool 后到时去重
           const responseTimeout = 120000; // 120秒超时（2分钟，与 TTS/文件生成超时对齐）
           const toolOnlyTimeout = 60000; // tool-only 兜底超时：60秒内没有 block 就兜底
           const maxToolRenewals = 3; // tool 续期上限：最多续期 3 次（总等待 = 60s × 3 = 180s）
@@ -848,6 +851,53 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             }, responseTimeout);
           });
 
+
+          // ============ 流式消息控制器 ============
+          const targetType = event.type === "c2c" ? "c2c" as const
+                          : event.type === "group" ? "group" as const
+                          : "channel" as const;
+          const useStreaming = shouldUseStreaming(account, targetType);
+          log?.info(`[qqbot:${account.accountId}] Streaming ${useStreaming ? "enabled" : "disabled"} for ${targetType} message from ${event.senderId}`);
+          let streamingController: StreamingController | null = null;
+
+          /** 创建一个新的 StreamingController 实例（用于初始创建和回复边界时重建） */
+          const createStreamingController = (): StreamingController => {
+            const ctrl = new StreamingController({
+              account,
+              userId: event.senderId,
+              replyToMsgId: event.messageId,
+              eventId: event.messageId,
+              logPrefix: `[qqbot:${account.accountId}:streaming]`,
+              log,
+              mediaContext: {
+                account,
+                event: {
+                  type: event.type as "c2c" | "group" | "channel",
+                  senderId: event.senderId,
+                  messageId: event.messageId,
+                  groupOpenid: event.groupOpenid,
+                  channelId: event.channelId,
+                },
+                log,
+              },
+              // 回复边界回调：终结旧 controller 后创建新的，用新回复文本继续流式
+              onReplyBoundary: async (newReplyText: string) => {
+                log?.info(`[qqbot:${account.accountId}] Reply boundary: creating new StreamingController for new reply`);
+                const newCtrl = createStreamingController();
+                streamingController = newCtrl;
+                // 将新回复的初始文本交给新 controller 处理
+                await newCtrl.onPartialReply({ text: newReplyText });
+              },
+            });
+            return ctrl;
+          };
+
+          if (useStreaming) {
+            log?.info(`[qqbot:${account.accountId}] Streaming mode enabled for ${targetType} target`);
+            streamingController = createStreamingController();
+          }
+
+
           const dispatchPromise = pluginRuntime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
             ctx: ctxPayload,
             cfg,
@@ -876,9 +926,15 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
                   // block 已先发送完毕，tool 后到的媒体立即转发（典型场景：AI 先流式输出文本再执行 TTS）
                   if (hasBlockResponse && toolMediaUrls.length > 0) {
-                    log?.info(`[qqbot:${account.accountId}] Block already sent, immediately forwarding ${toolMediaUrls.length} tool media URL(s)`);
-                    const urlsToSend = [...toolMediaUrls];
+                    // 去重：跳过已被 block deliver 的 sendPlainReply 处理过的 URL
+                    const urlsToSend = toolMediaUrls.filter(url => !blockDeliveredMediaUrls.has(url));
+                    const skippedCount = toolMediaUrls.length - urlsToSend.length;
                     toolMediaUrls.length = 0;
+                    if (urlsToSend.length === 0) {
+                      log?.info(`[qqbot:${account.accountId}] All ${skippedCount} tool media URL(s) already handled by block deliver, skipping`);
+                      return;
+                    }
+                    log?.info(`[qqbot:${account.accountId}] Block already sent, immediately forwarding ${urlsToSend.length} tool media URL(s) (deduped from block deliver)`);
                     for (const mediaUrl of urlsToSend) {
                       try {
                         const result = await sendMediaAuto({
@@ -949,6 +1005,37 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   log?.info(`[qqbot:${account.accountId}] Block deliver after ${toolDeliverCount} tool deliver(s)`);
                 }
 
+                // ============ 流式模式处理 ============
+                // 流式模式下，所有 block deliver 内容（含媒体标签）统一交由 StreamingController 处理。
+                // StreamingController 内部有重试机制；如果一个分片都没发出去则降级到普通消息。
+                if (streamingController && !streamingController.isTerminalPhase) {
+                  const deliverTextLen = (payload.text ?? "").length;
+                  const deliverPreview = (payload.text ?? "").slice(0, 40).replace(/\n/g, "\\n");
+                  log?.debug?.(`[qqbot:${account.accountId}] Streaming deliver entry, textLen=${deliverTextLen}, phase=${streamingController.currentPhase}, sentChunks=${streamingController.sentChunkCount_debug}, preview="${deliverPreview}"`);
+                  try {
+                    await streamingController.onDeliver(payload);
+                    log?.debug?.(`[qqbot:${account.accountId}] Streaming deliver done, phase=${streamingController.currentPhase}`);
+                  } catch (err) {
+                    // StreamingController 内部已有重试，这里只打日志
+                    log?.error(`[qqbot:${account.accountId}] Streaming deliver error: ${err}`);
+                  }
+
+                  // 检查是否因流式 API 不可用而需要降级（ensureStreamingStarted 全部失败）
+                  // 如果需要降级，不 return，让本次 deliver 的 payload.text（全量文本）继续走普通发送逻辑
+                  if (streamingController.shouldFallbackToStatic) {
+                    log?.info(`[qqbot:${account.accountId}] Streaming API unavailable, falling back to static for this deliver`);
+                    // 不 return，继续走普通发送逻辑（payload.text 是完整文本）
+                  } else {
+                    // 流式正常处理，不走普通发送逻辑
+                    pluginRuntime.channel.activity.record({
+                      channel: "qqbot",
+                      accountId: account.accountId,
+                      direction: "outbound",
+                    });
+                    return;
+                  }
+                }
+
                 // ============ 实际发送逻辑（可被 debouncer 包裹） ============
                 const executeDeliver = async (deliverPayload: { text?: string; mediaUrls?: string[]; mediaUrl?: string }, _deliverInfo: { kind: string }) => {
                   // ============ 引用回复 ============
@@ -998,6 +1085,10 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   if (handled) return;
 
                   // ============ 非结构化消息发送 ============
+                  // 记录 block deliver 处理的 mediaUrl，供 tool 后到时去重
+                  if (deliverPayload.mediaUrl) blockDeliveredMediaUrls.add(deliverPayload.mediaUrl);
+                  if (deliverPayload.mediaUrls) for (const u of deliverPayload.mediaUrls) blockDeliveredMediaUrls.add(u);
+
                   await sendPlainReply(
                     deliverPayload, replyText, deliverEvent, deliverActx,
                     sendWithRetry, consumeQuoteRef, toolMediaUrls,
@@ -1033,6 +1124,23 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                   clearTimeout(timeoutId);
                   timeoutId = null;
                 }
+
+                // 流式模式：委托给 streaming controller 处理错误
+                if (streamingController && !streamingController.isTerminalPhase) {
+                  try {
+                    await streamingController.onError(err);
+                  } catch (streamErr) {
+                    log?.error(`[qqbot:${account.accountId}] Streaming onError failed: ${streamErr}`);
+                  }
+
+                  // 如果 onError 中因无分片发出而降级，不 return，走普通错误处理
+                  if (streamingController.shouldFallbackToStatic) {
+                    log?.info(`[qqbot:${account.accountId}] Streaming onError: no chunk sent, falling back to static error handling`);
+                    // 不 return，继续走普通错误处理
+                  } else {
+                    return;
+                  }
+                }
                 
                 const errMsg = String(err);
 
@@ -1051,7 +1159,23 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
               },
             },
             replyOptions: {
-              disableBlockStreaming: true,
+              // 流式模式时禁用 block streaming
+              disableBlockStreaming: !useStreaming,
+              // 流式模式下注册 onPartialReply 回调，接收流式文本增量
+              ...(streamingController ? {
+                onPartialReply: async (payload: { text?: string }) => {
+                  const textLen = payload.text?.length ?? 0;
+                  const preview = (payload.text ?? "").slice(0, 40).replace(/\n/g, "\\n");
+                  log?.debug?.(`[qqbot:${account.accountId}] onPartialReply called, textLen=${textLen}, phase=${streamingController!.currentPhase}, isTerminal=${streamingController!.isTerminalPhase}, preview="${preview}"`);
+                  try {
+                    await streamingController!.onPartialReply(payload);
+                    log?.debug?.(`[qqbot:${account.accountId}] onPartialReply done, phase=${streamingController!.currentPhase}`);
+                  } catch (err) {
+                    // StreamingController 内部已有重试，这里只打日志
+                    log?.error(`[qqbot:${account.accountId}] Streaming onPartialReply error: ${err}`);
+                  }
+                },
+              } : {}),
             },
           });
 
@@ -1081,6 +1205,28 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
             if (debouncer) {
               await debouncer.dispose();
               debouncer = null;
+            }
+
+            // ============ 流式消息收尾 ============
+            // dispatch 完成后，标记流式控制器已完成并触发 onIdle（发送终结分片）
+            if (streamingController && !streamingController.isTerminalPhase) {
+              try {
+                streamingController.markFullyComplete();
+                await streamingController.onIdle();
+                log?.debug?.(`[qqbot:${account.accountId}] Streaming controller finalized`);
+              } catch (err) {
+                log?.error(`[qqbot:${account.accountId}] Streaming finalization error: ${err}`);
+                // 尝试中止
+                try { await streamingController.abortStreaming(); } catch { /* ignore */ }
+              }
+            }
+
+            // ============ 流式降级到非流式 ============
+            // 无需额外处理：如果流式 API 不可用（shouldFallbackToStatic），
+            // deliver 回调中已自动跳过流式拦截，走普通消息发送逻辑。
+            // （每次 deliver 收到的都是全量文本，不需要在 controller 内部保存累积文本）
+            if (streamingController?.shouldFallbackToStatic) {
+              log?.debug?.(`[qqbot:${account.accountId}] Streaming was degraded to static mode (no chunk sent successfully)`);
             }
           }
         } catch (err) {

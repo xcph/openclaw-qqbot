@@ -10,7 +10,7 @@
 
 **Connect your AI assistant to QQ — private chat, group chat, and rich media, all in one plugin.**
 
-### 🚀 Current Version: `v1.6.5`
+### 🚀 Current Version: `v1.6.6`
 
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![QQ Bot](https://img.shields.io/badge/QQ_Bot-API_v2-red)](https://bot.q.qq.com/wiki/)
@@ -46,6 +46,7 @@ Scan to join the QQ group chat
 | 📝 **Markdown** | Full Markdown formatting support |
 | 🛠️ **Commands** | Native OpenClaw command integration |
 | 💬 **Quoted Context** | Resolve QQ `REFIDX_*` quoted messages and inject quote body into AI context |
+| 📦 **Large File Support** | Auto chunked upload for large files (parallel upload with retry), up to 100 MB |
 
 ---
 
@@ -129,7 +130,7 @@ This capability depends on OpenClaw cron scheduling and proactive messaging. If 
 >
 > **QQBot**: *(sends a .txt file)*
 
-AI can send files directly. Any format, up to 20MB.
+AI can send files directly. Any format, up to 100MB. Large files are automatically chunked and uploaded in parallel.
 
 <img width="360" src="docs/images/17cada70df90185d45a2d6dd36e92f2f_720.jpg" alt="File Sending Demo" />
 

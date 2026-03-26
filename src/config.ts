@@ -70,17 +70,10 @@ export function resolveQQBotAccount(
   let secretSource: "config" | "file" | "env" | "none" = "none";
 
   if (resolvedAccountId === DEFAULT_ACCOUNT_ID) {
-    // 默认账户从顶层读取
+    // 默认账户从顶层读取（展开所有字段，避免遗漏新增配置项）
+    const { accounts: _accounts, ...topLevelConfig } = qqbot ?? {} as QQBotChannelConfig;
     accountConfig = {
-      enabled: qqbot?.enabled,
-      name: qqbot?.name,
-      appId: qqbot?.appId,
-      clientSecret: qqbot?.clientSecret,
-      clientSecretFile: qqbot?.clientSecretFile,
-      dmPolicy: qqbot?.dmPolicy,
-      allowFrom: qqbot?.allowFrom,
-      systemPrompt: qqbot?.systemPrompt,
-      imageServerBaseUrl: qqbot?.imageServerBaseUrl,
+      ...topLevelConfig,
       markdownSupport: qqbot?.markdownSupport ?? true,
     };
     appId = normalizeAppId(qqbot?.appId);

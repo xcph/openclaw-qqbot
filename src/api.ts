@@ -7,6 +7,20 @@ import os from "node:os";
 import { computeFileHash, getCachedFileInfo, setCachedFileInfo } from "./utils/upload-cache.js";
 import { sanitizeFileName } from "./utils/platform.js";
 
+// ============ 自定义错误 ============
+
+/** API 请求错误，携带 HTTP status code */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly path: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 const API_BASE = "https://api.sgroup.qq.com";
 const TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken";
 
@@ -51,7 +65,6 @@ export function onMessageSent(callback: OnMessageSentCallback): void {
 
 /**
  * 初始化 API 配置
- * @param options.markdownSupport - 是否支持 markdown 消息（默认 false，需要机器人具备该权限才能启用）
  */
 export function initApiConfig(options: { markdownSupport?: boolean }): void {
   currentMarkdownSupport = options.markdownSupport === true;
@@ -303,15 +316,15 @@ export async function apiRequest<T = unknown>(
         : res.status === 429
           ? "请求过于频繁，已被限流"
           : `开放平台返回 HTTP ${res.status}`;
-      throw new Error(`${statusHint}（${path}），请稍后重试`);
+      throw new ApiError(`${statusHint}（${path}），请稍后重试`, res.status, path);
     }
     // JSON 错误响应
     try {
       const error = JSON.parse(rawBody) as { message?: string; code?: number };
-      throw new Error(`API Error [${path}]: ${error.message ?? rawBody}`);
+      throw new ApiError(`API Error [${path}]: ${error.message ?? rawBody}`, res.status, path);
     } catch (parseErr) {
-      if (parseErr instanceof Error && parseErr.message.startsWith("API Error")) throw parseErr;
-      throw new Error(`API Error [${path}] HTTP ${res.status}: ${rawBody.slice(0, 200)}`);
+      if (parseErr instanceof ApiError) throw parseErr;
+      throw new ApiError(`API Error [${path}] HTTP ${res.status}: ${rawBody.slice(0, 200)}`, res.status, path);
     }
   }
 
@@ -358,6 +371,71 @@ async function apiRequestWithRetry<T = unknown>(
       if (attempt < maxRetries) {
         const delay = UPLOAD_BASE_DELAY_MS * Math.pow(2, attempt);
         console.log(`[qqbot-api] Upload attempt ${attempt + 1} failed, retrying in ${delay}ms: ${errMsg.slice(0, 100)}`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  throw lastError!;
+}
+
+// ============ 完成上传重试（无条件，任何错误都重试） ============
+
+const COMPLETE_UPLOAD_MAX_RETRIES = 2;
+const COMPLETE_UPLOAD_BASE_DELAY_MS = 2000;
+
+/**
+ * 完成上传专用重试：无条件重试所有错误（包括 4xx、5xx、网络错误、超时等）
+ * 分片上传完成接口的失败往往是平台侧异步处理未就绪，重试通常能成功
+ */
+async function completeUploadWithRetry(
+  accessToken: string,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<MediaUploadResponse> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= COMPLETE_UPLOAD_MAX_RETRIES; attempt++) {
+    try {
+      return await apiRequest<MediaUploadResponse>(accessToken, method, path, body);
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+
+      if (attempt < COMPLETE_UPLOAD_MAX_RETRIES) {
+        const delay = COMPLETE_UPLOAD_BASE_DELAY_MS * Math.pow(2, attempt);
+        console.warn(`[qqbot-api] CompleteUpload attempt ${attempt + 1} failed, retrying in ${delay}ms: ${lastError.message.slice(0, 200)}`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  throw lastError!;
+}
+
+// ============ 分片完成重试（无条件，与 completeUpload 策略一致） ============
+
+const PART_FINISH_MAX_RETRIES = 2;
+const PART_FINISH_BASE_DELAY_MS = 1000;
+
+async function partFinishWithRetry(
+  accessToken: string,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<void> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= PART_FINISH_MAX_RETRIES; attempt++) {
+    try {
+      await apiRequest<Record<string, unknown>>(accessToken, method, path, body);
+      return;
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+
+      if (attempt < PART_FINISH_MAX_RETRIES) {
+        const delay = PART_FINISH_BASE_DELAY_MS * Math.pow(2, attempt);
+        console.warn(`[qqbot-api] PartFinish attempt ${attempt + 1} failed, retrying in ${delay}ms: ${lastError.message.slice(0, 200)}`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
@@ -546,6 +624,168 @@ export interface UploadMediaResponse {
   file_info: string;
   ttl: number;
   id?: string;
+}
+
+// ============ 大文件分片上传 API ============
+
+/** 分片信息 */
+export interface UploadPart {
+  /** 分片索引（从 1 开始） */
+  index: number;
+  /** 预签名上传链接 */
+  presigned_url: string;
+}
+
+/** 申请上传响应 */
+export interface UploadPrepareResponse {
+  /** 上传任务 ID */
+  upload_id: string;
+  /** 分块大小（字节） */
+  block_size: number;
+  /** 分片列表（含预签名链接） */
+  parts: UploadPart[];
+}
+
+/** 完成文件上传响应（与 UploadMediaResponse 一致） */
+export interface MediaUploadResponse {
+  /** 文件 UUID */
+  file_uuid: string;
+  /** 文件信息（用于发送消息），是 InnerUploadRsp 的序列化 */
+  file_info: string;
+  /** 文件信息过期时长（秒） */
+  ttl: number;
+}
+
+/** 申请上传时的文件哈希信息 */
+export interface UploadPrepareHashes {
+  /** 整个文件的 MD5（十六进制） */
+  md5: string;
+  /** 整个文件的 SHA1（十六进制） */
+  sha1: string;
+  /** 文件前 10002432 Bytes 的 MD5（十六进制）；文件不足该大小时为整文件 MD5 */
+  md5_10m: string;
+}
+
+/**
+ * 申请上传（C2C）
+ * POST /v2/users/{user_id}/upload_prepare
+ * 
+ * @param accessToken - 访问令牌
+ * @param userId - 用户 openid
+ * @param fileType - 业务类型（1=图片, 2=视频, 3=语音, 4=文件）
+ * @param fileName - 文件名
+ * @param fileSize - 文件大小（字节）
+ * @param hashes - 文件哈希信息（md5, sha1, md5_10m）
+ * @returns 上传任务 ID、分块大小、分片预签名链接列表
+ */
+export async function c2cUploadPrepare(
+  accessToken: string,
+  userId: string,
+  fileType: MediaFileType,
+  fileName: string,
+  fileSize: number,
+  hashes: UploadPrepareHashes,
+): Promise<UploadPrepareResponse> {
+  return apiRequest<UploadPrepareResponse>(
+    accessToken, "POST", `/v2/users/${userId}/upload_prepare`,
+    { file_type: fileType, file_name: fileName, file_size: fileSize, md5: hashes.md5, sha1: hashes.sha1, md5_10m: hashes.md5_10m },
+  );
+}
+
+/**
+ * 完成分片上传（C2C）
+ * POST /v2/users/{user_id}/upload_part_finish
+ * 
+ * @param accessToken - 访问令牌
+ * @param userId - 用户 openid
+ * @param uploadId - 上传任务 ID
+ * @param partIndex - 分片索引（从 1 开始）
+ * @param blockSize - 分块大小（字节）
+ * @param md5 - 分片数据的 MD5（十六进制）
+ */
+export async function c2cUploadPartFinish(
+  accessToken: string,
+  userId: string,
+  uploadId: string,
+  partIndex: number,
+  blockSize: number,
+  md5: string,
+): Promise<void> {
+  await partFinishWithRetry(
+    accessToken, "POST", `/v2/users/${userId}/upload_part_finish`,
+    { upload_id: uploadId, part_index: partIndex, block_size: blockSize, md5 },
+  );
+}
+
+/**
+ * 完成文件上传（C2C）
+ * POST /v2/users/{user_id}/files
+ * 
+ * @param accessToken - 访问令牌
+ * @param userId - 用户 openid
+ * @param uploadId - 上传任务 ID
+ * @returns 文件信息（file_uuid, file_info, ttl）
+ */
+export async function c2cCompleteUpload(
+  accessToken: string,
+  userId: string,
+  uploadId: string,
+): Promise<MediaUploadResponse> {
+  return completeUploadWithRetry(
+    accessToken, "POST", `/v2/users/${userId}/files`,
+    { upload_id: uploadId },
+  );
+}
+
+/**
+ * 申请上传（Group）
+ * POST /v2/groups/{group_id}/upload_prepare
+ */
+export async function groupUploadPrepare(
+  accessToken: string,
+  groupId: string,
+  fileType: MediaFileType,
+  fileName: string,
+  fileSize: number,
+  hashes: UploadPrepareHashes,
+): Promise<UploadPrepareResponse> {
+  return apiRequest<UploadPrepareResponse>(
+    accessToken, "POST", `/v2/groups/${groupId}/upload_prepare`,
+    { file_type: fileType, file_name: fileName, file_size: fileSize, md5: hashes.md5, sha1: hashes.sha1, md5_10m: hashes.md5_10m },
+  );
+}
+
+/**
+ * 完成分片上传（Group）
+ * POST /v2/groups/{group_id}/upload_part_finish
+ */
+export async function groupUploadPartFinish(
+  accessToken: string,
+  groupId: string,
+  uploadId: string,
+  partIndex: number,
+  blockSize: number,
+  md5: string,
+): Promise<void> {
+  await partFinishWithRetry(
+    accessToken, "POST", `/v2/groups/${groupId}/upload_part_finish`,
+    { upload_id: uploadId, part_index: partIndex, block_size: blockSize, md5 },
+  );
+}
+
+/**
+ * 完成文件上传（Group）
+ * POST /v2/groups/{group_id}/files
+ */
+export async function groupCompleteUpload(
+  accessToken: string,
+  groupId: string,
+  uploadId: string,
+): Promise<MediaUploadResponse> {
+  return completeUploadWithRetry(
+    accessToken, "POST", `/v2/groups/${groupId}/files`,
+    { upload_id: uploadId },
+  );
 }
 
 export async function uploadC2CMedia(
@@ -840,4 +1080,43 @@ async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       signal.addEventListener("abort", onAbort, { once: true });
     }
   });
+}
+
+// ============ 流式消息 API ============
+
+import type { StreamMessageRequest, StreamMessageResponse } from "./types.js";
+
+/**
+ * 发送流式消息（C2C 私聊）
+ * 
+ * 流式协议：
+ * - 首次调用时不传 stream_msg_id，由平台返回
+ * - 后续分片携带 stream_msg_id 和递增 msg_seq
+ * - input_state="1" 表示生成中，"10" 表示生成结束（终结状态）
+ * 
+ * @param accessToken - access_token
+ * @param openid - 用户 openid
+ * @param req - 流式消息请求体
+ * @returns 流式消息响应
+ */
+export async function sendC2CStreamMessage(
+  accessToken: string,
+  openid: string,
+  req: StreamMessageRequest,
+): Promise<StreamMessageResponse> {
+  const path = `/v2/users/${openid}/stream_messages`;
+  const body: Record<string, unknown> = {
+    input_mode: req.input_mode,
+    input_state: req.input_state,
+    content_type: req.content_type,
+    content_raw: req.content_raw,
+    event_id: req.event_id,
+    msg_id: req.msg_id,
+    msg_seq: req.msg_seq,
+    index: req.index,
+  };
+  if (req.stream_msg_id) {
+    body.stream_msg_id = req.stream_msg_id;
+  }
+  return apiRequest<StreamMessageResponse>(accessToken, "POST", path, body);
 }

@@ -9,7 +9,7 @@
 
 **让你的 AI 助手接入 QQ — 私聊、群聊、富媒体，一个插件全搞定。**
 
-### 🚀 当前版本： `v1.6.5`
+### 🚀 当前版本： `v1.6.6`
 
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![QQ Bot](https://img.shields.io/badge/QQ_Bot-API_v2-red)](https://bot.q.qq.com/wiki/)
@@ -41,6 +41,7 @@
 | 📝 **Markdown** | 完整支持 Markdown 格式消息 |
 | 🛠️ **原生命令** | 支持 OpenClaw 原生命令 |
 | 💬 **引用上下文** | 解析 QQ `REFIDX_*` 引用消息，并将引用内容注入 AI 上下文 |
+| 📦 **大文件支持** | 大文件自动分片并行上传，最大支持 100 MB |
 
 ---
 
@@ -124,7 +125,7 @@ AI 可直接发送语音消息。格式：mp3/wav/silk/ogg，无需安装 ffmpeg
 >
 > **QQBot**：*（发送 .txt 文件）*
 
-AI 可直接发送文件。任意格式，最大 20MB。
+AI 可直接发送文件。任意格式，最大 100MB。大文件自动分片并行上传。
 
 <img width="360" src="docs/images/17cada70df90185d45a2d6dd36e92f2f_720.jpg" alt="发文件演示" />
 
