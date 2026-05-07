@@ -20,7 +20,10 @@
     "index.ts",
     "preload.cjs",
     "tsconfig.json",
-    "openclaw.plugin.json"
+    "openclaw.plugin.json",
+    "node_modules/silk-wasm",
+    "node_modules/mpg123-decoder",
+    "node_modules/ws"
   ],
   "openclaw": {
     "id": "openclaw-qqbot",
@@ -33,14 +36,16 @@
     }
   },
   "scripts": {
-    "build": "tsc || true",
+    "build": "tsc",
     "postbuild": "node -e \"const fs=require('fs'),p=require('path'),ext=p.join(require('os').homedir(),'.openclaw/extensions/openclaw-qqbot');if(fs.existsSync(ext)&&!fs.lstatSync(ext).isSymbolicLink()){const d=p.join(ext,'dist'),pr=p.join(ext,'preload.cjs');fs.cpSync('dist',d,{recursive:true});fs.copyFileSync('preload.cjs',pr);console.log('[postbuild] synced to',ext)}\"",
     "dev": "tsc --watch",
-    "prepack": "npm install --omit=dev",
+    "prepack": "npm run build && npm install --omit=dev",
     "postinstall": "node scripts/postinstall-link-sdk.js 2>/dev/null || true"
   },
   "dependencies": {
     "mpg123-decoder": "^1.0.3",
+    "node-addon-api": "^8.3.0",
+    "node-gyp": "^11.2.0",
     "silk-wasm": "^3.7.1",
     "ws": "^8.18.0"
   },

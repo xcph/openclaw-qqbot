@@ -16,7 +16,75 @@
   },
   "channelConfigs": {
     "qqbot": {
-      "preferOver": ["qqbot"]
+      "schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "name": { "type": "string" },
+          "appId": { "type": "string" },
+          "clientSecret": { "type": "string" },
+          "clientSecretFile": { "type": "string" },
+          "dmPolicy": {
+            "type": "string",
+            "enum": ["open", "pairing", "allowlist"]
+          },
+          "allowFrom": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "groupPolicy": {
+            "type": "string",
+            "enum": ["open", "allowlist", "disabled"]
+          },
+          "groupAllowFrom": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "groups": { "type": "object", "additionalProperties": true },
+          "systemPrompt": { "type": "string" },
+          "imageServerBaseUrl": { "type": "string" },
+          "markdownSupport": { "type": "boolean" },
+          "voiceDirectUploadFormats": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "audioFormatPolicy": { "type": "object", "additionalProperties": true },
+          "urlDirectUpload": { "type": "boolean" },
+          "upgradeUrl": { "type": "string" },
+          "upgradeMode": {
+            "type": "string",
+            "enum": ["doc", "hot-reload"]
+          },
+          "upgradePkg": { "type": "string" },
+          "deliverDebounce": { "type": "object", "additionalProperties": true },
+          "streaming": { "type": "boolean" },
+          "accounts": { "type": "object", "additionalProperties": true },
+          "stt": { "type": "object", "additionalProperties": true },
+          "tts": { "type": "object", "additionalProperties": true }
+        },
+        "required": []
+      },
+      "uiHints": {
+        "appId": {
+          "label": "App ID",
+          "placeholder": "QQ 开放平台应用 AppID"
+        },
+        "clientSecret": {
+          "label": "Client Secret",
+          "sensitive": true
+        },
+        "clientSecretFile": {
+          "label": "Client Secret 文件路径",
+          "advanced": true
+        }
+      },
+      "label": "QQ Bot",
+      "description": "QQ Bot（腾讯云官方开放平台）：凭证、群策略、流式与媒体相关 channels.qqbot 选项",
+      "blurb": "通过官方 QQ Bot API 接入 QQ 私聊与群聊",
+      "docsPath": "/docs/channels/qqbot",
+      "docsLabel": "qqbot",
+      "aliases": ["qq", "qq-bot", "tencent-qq"]
     }
   }
 }

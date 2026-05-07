@@ -1,8 +1,18 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execFile } from "node:child_process";
 import { decode, encode, isSilk } from "silk-wasm";
 import { detectFfmpeg, isWindows } from "./platform.js";
+
+/** 音频转换配置 */
+interface AudioConvertConfig {
+  /** 是否使用外部 ffmpeg（false 则仅使用 WASM） */
+  useExternalFfmpeg: boolean;
+}
+
+/** 默认配置：不使用外部 ffmpeg，仅使用 WASM */
+const DEFAULT_CONFIG: AudioConvertConfig = {
+  useExternalFfmpeg: false,
+};
 
 /**
  * 检查文件是否为 SILK 格式（QQ/微信语音常用格式）
@@ -668,34 +678,13 @@ async function checkFfmpeg(): Promise<string | null> {
 /**
  * 使用 ffmpeg 将任意音频文件转换为 PCM s16le 单声道 24kHz
  *
- * 跨平台注意:
- * - Windows 上 pipe:1 需要 encoding: "buffer" 防止 BOM 问题
- * - 使用 detectFfmpeg() 返回的完整路径，兼容非 PATH 安装
+ * 注意：为安全起见，此函数不再执行外部 ffmpeg 命令。
+ * 所有音频转换均通过 WASM 解码器完成。
+ * 如需支持更多格式，请安装 ffmpeg 并启用 useExternalFfmpeg 配置（当前版本已禁用）。
  */
-function ffmpegToPCM(ffmpegCmd: string, inputPath: string, sampleRate: number = 24000): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const args = [
-      "-i", inputPath,
-      "-f", "s16le",
-      "-ar", String(sampleRate),
-      "-ac", "1",
-      "-acodec", "pcm_s16le",
-      "-v", "error",
-      "pipe:1",
-    ];
-    execFile(ffmpegCmd, args, {
-      maxBuffer: 50 * 1024 * 1024,
-      encoding: "buffer",
-      // Windows: 隐藏弹出的 cmd 窗口
-      ...(isWindows() ? { windowsHide: true } : {}),
-    }, (err, stdout) => {
-      if (err) {
-        reject(new Error(`ffmpeg failed: ${err.message}`));
-        return;
-      }
-      resolve(stdout as unknown as Buffer);
-    });
-  });
+async function ffmpegToPCM(_ffmpegCmd: string, _inputPath: string, _sampleRate: number = 24000): Promise<Buffer> {
+  // 安全策略：禁用外部 ffmpeg 调用，仅使用 WASM 解码器
+  throw new Error("External ffmpeg is disabled for security. Please use WASM decoders only.");
 }
 
 // ============ WASM fallback: MP3 解码 ============

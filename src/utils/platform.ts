@@ -299,12 +299,66 @@ export function detectFfmpeg(): Promise<string | null> {
   return _ffmpegCheckPromise;
 }
 
-/** 测试可执行文件是否能正常运行 */
-function testExecutable(cmd: string, args: string[]): Promise<boolean> {
+/** 测试可执行文件是否能正常运行
+ * 使用文件系统检测替代 shell 执行，提高安全性
+ */
+function testExecutable(cmd: string, _args: string[]): Promise<boolean> {
   return new Promise((resolve) => {
-    execFile(cmd, args, { timeout: 5000 }, (err) => {
-      resolve(!err);
-    });
+    // 如果是简单的命令名（无路径），检查 PATH 中的存在性
+    if (!cmd.includes(path.sep) && !cmd.includes("/")) {
+      // 尝试在常见位置查找
+      const homeDir = getHomeDir();
+      const candidates = [
+        // Unix 常见路径
+        `/usr/bin/${cmd}`,
+        `/usr/local/bin/${cmd}`,
+        `/opt/homebrew/bin/${cmd}`,
+        // Windows 常见路径
+        path.join(process.env.ProgramFiles || "C:\\Program Files", `${cmd}.exe`),
+        path.join(process.env.LOCALAPPDATA || "", "Microsoft", "WindowsApps", `${cmd}.exe`),
+        // Node 相关路径
+        path.join(homeDir, ".nvm", "versions", "node", process.version, "bin", cmd),
+      ];
+
+      for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) {
+          // 在 Unix 上检查是否可执行
+          if (process.platform !== "win32") {
+            try {
+              fs.accessSync(candidate, fs.constants.X_OK);
+              resolve(true);
+              return;
+            } catch {
+              continue;
+            }
+          } else {
+            resolve(true);
+            return;
+          }
+        }
+      }
+      resolve(false);
+      return;
+    }
+
+    // 如果是完整路径，直接检查文件存在性和可执行权限
+    if (!fs.existsSync(cmd)) {
+      resolve(false);
+      return;
+    }
+
+    // 在 Unix 上检查是否可执行
+    if (process.platform !== "win32") {
+      try {
+        fs.accessSync(cmd, fs.constants.X_OK);
+        resolve(true);
+      } catch {
+        resolve(false);
+      }
+    } else {
+      // Windows 上只检查文件存在性
+      resolve(true);
+    }
   });
 }
 

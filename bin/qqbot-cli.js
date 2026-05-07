@@ -6,9 +6,11 @@
  * 用法:
  *   npx openclaw-qqbot upgrade    # 升级插件
  *   npx openclaw-qqbot install    # 安装插件
+ * 
+ * 不调用子进程执行外部命令：为满足 OpenClaw 插件安全扫描，本脚本仅做本地清理与配置读取，
+ * 具体 `openclaw`/`clawdbot` 命令请用户在本机终端自行执行（见下方打印）。
  */
 
-import { execSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, rmSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
@@ -17,11 +19,49 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// 获取包的根目录
-const PKG_ROOT = join(__dirname, '..');
-
 const args = process.argv.slice(2);
 const command = args[0];
+
+/** 允许的 CLI 命令白名单 */
+const ALLOWED_CLI_COMMANDS = new Set(['openclaw', 'clawdbot', 'moltbot']);
+
+/** 验证命令是否安全（防止命令注入） */
+function validateCommand(cmd) {
+  if (!cmd || typeof cmd !== 'string') return false;
+  
+  // 检查是否包含危险字符
+  const dangerousChars = /[;&|`$(){}[\]\n\r<>]/;
+  if (dangerousChars.test(cmd)) {
+    console.error(`Error: Dangerous character in command: ${cmd}`);
+    return false;
+  }
+  
+  return true;
+}
+
+/** 验证参数是否安全 */
+function validateArg(arg) {
+  if (!arg || typeof arg !== 'string') return false;
+
+  // 检查是否包含危险字符
+  // 允许字母数字、冒号（用于token）、连字符、下划线、点号
+  const dangerousChars = /[;&|`$(){}[\]\n\r<>]/;
+  if (dangerousChars.test(arg)) {
+    console.error(`Error: Dangerous character in argument`);
+    return false;
+  }
+
+  return true;
+}
+
+/** 验证 CLI 命令是否在白名单内 */
+function validateCliCommand(cmd) {
+  if (!ALLOWED_CLI_COMMANDS.has(cmd)) {
+    console.error(`Error: CLI command not in whitelist: ${cmd}`);
+    return false;
+  }
+  return true;
+}
 
 // 检测使用的是 clawdbot 还是 openclaw
 function detectInstallation() {
@@ -119,14 +159,35 @@ function cleanupInstallation(appName) {
   return oldQqbotConfig;
 }
 
-// 执行命令并继承 stdio
-function runCommand(cmd, args = []) {
-  try {
-    execSync([cmd, ...args].join(' '), { stdio: 'inherit' });
-    return true;
-  } catch (err) {
+/** 将参数格式化为可在 shell 中安全复制的片段（POSIX 风格单引号） */
+function escapeShellArgForDisplay(arg) {
+  const s = String(arg);
+  if (/^[a-zA-Z0-9._/@:\-]+$/.test(s)) return s;
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * 不执行子进程：仅校验并打印一条可复制到终端的完整命令。
+ * @returns 校验通过为 true
+ */
+function printCliInstruction(label, cmd, cmdArgs = []) {
+  if (!validateCommand(cmd)) {
+    console.error(`Error: Invalid command: ${cmd}`);
     return false;
   }
+  if (!validateCliCommand(cmd)) {
+    return false;
+  }
+  for (const arg of cmdArgs) {
+    if (!validateArg(arg)) {
+      console.error(`Error: Invalid argument`);
+      return false;
+    }
+  }
+  const line = [cmd, ...cmdArgs.map(escapeShellArgForDisplay)].join(' ');
+  if (label) console.log(label);
+  console.log(`  ${line}`);
+  return true;
 }
 
 // 升级命令
@@ -158,30 +219,47 @@ function upgrade() {
 
   console.log('\n=== 清理完成 ===');
 
-  // 自动安装插件
-  console.log('\n[1/2] 安装新版本插件...');
-  runCommand(foundInstallation, ['plugins', 'install', 'openclaw-qqbot']);
+  console.log('\n请在终端中依次执行以下命令（本脚本不会自动调用 CLI）：\n');
 
-  // 自动配置通道（使用保存的 appId 和 clientSecret）
-  console.log('\n[2/2] 配置机器人通道...');
+  printCliInstruction(
+    '[1/2] 安装新版本插件',
+    foundInstallation,
+    ['plugins', 'install', 'openclaw-qqbot'],
+  );
+
   if (savedConfig?.appId && savedConfig?.clientSecret) {
+    const appIdPattern = /^[a-zA-Z0-9_-]+$/;
+    const secretPattern = /^[a-zA-Z0-9_-]+$/;
+    if (!appIdPattern.test(savedConfig.appId) || !secretPattern.test(savedConfig.clientSecret)) {
+      console.error('Error: 无效的 appId 或 clientSecret 格式');
+      return;
+    }
+
     const token = `${savedConfig.appId}:${savedConfig.clientSecret}`;
-    console.log(`使用已保存的配置: appId=${savedConfig.appId}`);
-    runCommand(foundInstallation, ['channels', 'add', '--channel', 'qqbot', '--token', `"${token}"`]);
-    
-    // 恢复其他配置项（如 markdownSupport）
+    console.log(`\n已根据备份生成 token（appId=${savedConfig.appId}）`);
+
+    printCliInstruction(
+      '[2/2] 配置机器人通道',
+      foundInstallation,
+      ['channels', 'add', '--channel', 'qqbot', '--token', token],
+    );
+
     if (savedConfig.markdownSupport !== undefined) {
-      runCommand(foundInstallation, ['config', 'set', 'channels.qqbot.markdownSupport', String(savedConfig.markdownSupport)]);
+      printCliInstruction(
+        '（可选）恢复 markdownSupport',
+        foundInstallation,
+        ['config', 'set', 'channels.qqbot.markdownSupport', String(savedConfig.markdownSupport)],
+      );
     }
   } else {
-    console.log('未找到已保存的 qqbot 配置，请手动配置:');
-    console.log(`  ${foundInstallation} channels add --channel qqbot --token "appid:appsecret"`);
+    console.log('\n未找到已保存的 qqbot 配置，请手动添加通道，例如：');
+    printCliInstruction('', foundInstallation, ['channels', 'add', '--channel', 'qqbot', '--token', 'appid:appsecret']);
     return;
   }
 
-  console.log('\n=== 升级完成 ===');
-  console.log(`\n可以运行以下命令前台运行启动机器人:`);
-  console.log(`  ${foundInstallation} gateway  stop && ${foundInstallation} gateway --port 18789 --verbose`);
+  console.log('\n=== 本地清理与命令提示已完成 ===');
+  console.log('\n启动 Gateway 示例（请在本机终端执行）：');
+  console.log(`  ${foundInstallation} gateway stop && ${foundInstallation} gateway --port 18789 --verbose`);
 }
 
 // 安装命令
@@ -195,10 +273,10 @@ function install() {
     process.exit(1);
   }
 
-  console.log(`\n使用 ${cmd} 安装插件...`);
-  runCommand(cmd, ['plugins', 'install', '@tencent-connect/openclaw-qqbot']);
+  console.log(`\n请在终端执行以下命令安装插件：\n`);
+  printCliInstruction('', cmd, ['plugins', 'install', '@tencent-connect/openclaw-qqbot']);
 
-  console.log('\n=== 安装完成 ===');
+  console.log('\n=== 命令已打印 ===');
   console.log('\n请配置机器人通道:');
   console.log(`  ${cmd} channels add --channel qqbot --token "appid:appsecret"`);
 }

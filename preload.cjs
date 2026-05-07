@@ -9,6 +9,19 @@
  */
 "use strict";
 
+const path = require("path");
+const fs = require("fs");
+
+// 0) 确保本插件的 node_modules 在模块搜索路径中（解决 bundled dependencies 加载问题）
+const pluginNodeModules = path.join(__dirname, "node_modules");
+if (fs.existsSync(pluginNodeModules)) {
+  // 将本插件的 node_modules 添加到模块搜索路径开头
+  const originalPaths = module.paths || [];
+  if (!originalPaths.includes(pluginNodeModules)) {
+    module.paths = [pluginNodeModules, ...originalPaths];
+  }
+}
+
 const { ensurePluginSdkSymlink } = require("./scripts/link-sdk-core.cjs");
 
 // 1) 同步创建 symlink
