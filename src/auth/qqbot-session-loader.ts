@@ -1,16 +1,22 @@
 /**
- * `@tencent-connect/qqbot-connector` 的 `exports` 仅暴露根入口，
- * 无法 `import ".../qqbot-session.js"`。通过 `require.resolve` 主入口得到目录，
- * 再加载同级的 `qqbot-session.js`（勿解析未导出的 `package.json`）。
+ * `@tencent-connect/qqbot-connector` 的 `exports` 仅暴露根入口，无法直接 `import` 子路径。
+ * 用 `require.resolve` 定位安装目录后，**必须**加载 `dist/esm/qqbot-session.js`（见下方注释）。
  */
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const require = createRequire(import.meta.url);
-/** 勿 resolve `package.json`（未列入 exports）；主入口与 qqbot-session 同目录（esm 或 cjs）。 */
+/**
+ * createRequire 解析到的主入口常为 `dist/cjs/index.js`，同目录下 qqbot-session 为 **CommonJS**；
+ * 连接器包声明 `"type":"module"`，对 `.js` 按 ESM 解析会触发 `exports is not defined`。
+ * 始终加载 `dist/esm/qqbot-session.js`（真实 ESM）。
+ */
 const connectorMain = require.resolve("@tencent-connect/qqbot-connector");
-const connectorDir = dirname(connectorMain);
+let connectorDir = dirname(connectorMain);
+if (basename(connectorDir) === "cjs") {
+  connectorDir = join(dirname(connectorDir), "esm");
+}
 const sessionHref = pathToFileURL(join(connectorDir, "qqbot-session.js")).href;
 
 export type QQBotSessionModule = {
