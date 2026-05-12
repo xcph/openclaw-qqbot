@@ -8,6 +8,11 @@ const ACTIVE_LOGIN_TTL_MS = 5 * 60_000;
 const QR_LONG_POLL_TIMEOUT_MS = 35_000;
 const MAX_QR_REFRESH_COUNT = 3;
 
+/** iLink 扫码接口要求（见协议 get_qrcode_status）；缺省易被服务端判为无效会话并返回 expired。 */
+const ILINK_HTTP_HEADERS = {
+  "iLink-App-ClientVersion": "1",
+} as const;
+
 type ActiveLogin = {
   sessionKey: string;
   id: string;
@@ -99,7 +104,10 @@ async function apiGetFetch(params: {
       ? setTimeout(() => controller.abort(), params.timeoutMs)
       : undefined;
   try {
-    const res = await fetch(url, { signal: controller.signal });
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: { ...ILINK_HTTP_HEADERS },
+    });
     if (!res.ok) {
       throw new Error(`${params.label}: HTTP ${res.status}`);
     }
