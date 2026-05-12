@@ -11,6 +11,8 @@ const MAX_QR_REFRESH_COUNT = 3;
 /** iLink 扫码接口要求（见协议 get_qrcode_status）；缺省易被服务端判为无效会话并返回 expired。 */
 const ILINK_HTTP_HEADERS = {
   "iLink-App-ClientVersion": "1",
+  SKRouteTag: "1001",
+  "User-Agent": "OpenClaw-QQBot-QR/1.0",
 } as const;
 
 type ActiveLogin = {
