@@ -9,6 +9,9 @@
     "proactiveMessaging": true,
     "cronJobs": true
   },
+  "contracts": {
+    "tools": ["qqbot_channel_api", "qqbot_remind"]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
