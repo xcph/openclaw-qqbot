@@ -8,12 +8,53 @@ const ACTIVE_LOGIN_TTL_MS = 5 * 60_000;
 const QR_LONG_POLL_TIMEOUT_MS = 35_000;
 const MAX_QR_REFRESH_COUNT = 3;
 
-/** iLink 扫码接口要求（见协议 get_qrcode_status）；缺省易被服务端判为无效会话并返回 expired。 */
-const ILINK_HTTP_HEADERS = {
-  "iLink-App-ClientVersion": "1",
-  SKRouteTag: "1001",
-  "User-Agent": "OpenClaw-QQBot-QR/1.0",
-} as const;
+type QQQrResolved = QQBotQrLoginConfig & {
+  baseUrl: string;
+  writeToAccountKey: string;
+  skRouteTag: string;
+};
+
+function buildIlinkFetchHeaders(skRouteTag: string): Record<string, string> {
+  return {
+    "iLink-App-ClientVersion": "1",
+    SKRouteTag: skRouteTag,
+    "User-Agent": "OpenClaw-QQBot-QR/1.0",
+  };
+}
+
+function unwrapIlinkJsonRoot(parsed: unknown): Record<string, unknown> {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {};
+  }
+  const o = parsed as Record<string, unknown>;
+  const inner = o.data ?? o.result;
+  if (inner && typeof inner === "object" && !Array.isArray(inner)) {
+    return inner as Record<string, unknown>;
+  }
+  return o;
+}
+
+function pickNonEmptyString(root: Record<string, unknown>, keys: string[]): string {
+  for (const k of keys) {
+    const v = root[k];
+    if (typeof v === "string" && v.trim()) {
+      return v.trim();
+    }
+  }
+  return "";
+}
+
+function coerceQrDisplayUrl(raw: string): string {
+  const t = raw.trim();
+  if (!t) return "";
+  if (t.startsWith("http://") || t.startsWith("https://") || t.startsWith("data:image")) {
+    return t;
+  }
+  if (/^[A-Za-z0-9+/=\s]+$/.test(t) && t.length >= 64) {
+    return `data:image/png;base64,${t.replace(/\s+/g, "")}`;
+  }
+  return t;
+}
 
 type ActiveLogin = {
   sessionKey: string;
@@ -44,9 +85,72 @@ interface StatusResponse {
   redirect_host?: string;
 }
 
-export function resolveQQBotQrLoginFromConfig(
-  cfg: OpenClawConfig,
-): (QQBotQrLoginConfig & { baseUrl: string; writeToAccountKey: string }) | null {
+type StatusKey = StatusResponse["status"];
+
+function parseQrFetchBody(rawText: string): QRCodeResponse {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawText) as unknown;
+  } catch {
+    throw new Error("ilink get_bot_qrcode 返回非 JSON");
+  }
+  const root = unwrapIlinkJsonRoot(parsed);
+  const qrcode = pickNonEmptyString(root, ["qrcode", "qr_code", "qrCode", "QrCode"]);
+  const imgRaw = pickNonEmptyString(root, [
+    "qrcode_img_content",
+    "qrcodeImgContent",
+    "qrcode_url",
+    "qrcodeUrl",
+    "img_content",
+    "image_url",
+    "imageUrl",
+    "qr_url",
+    "url",
+  ]);
+  const qrcode_img_content = coerceQrDisplayUrl(imgRaw);
+  return { qrcode, qrcode_img_content };
+}
+
+function normalizeIlinkStatus(raw: unknown): StatusKey {
+  const s = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  const allowed = new Set<StatusKey>([
+    "wait",
+    "scaned",
+    "confirmed",
+    "expired",
+    "scaned_but_redirect",
+  ]);
+  if (allowed.has(s as StatusKey)) {
+    return s as StatusKey;
+  }
+  return "wait";
+}
+
+function parseStatusFetchBody(rawText: string): StatusResponse {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawText) as unknown;
+  } catch {
+    return { status: "wait" };
+  }
+  const root = unwrapIlinkJsonRoot(parsed);
+  const status = normalizeIlinkStatus(root.status ?? root.Status);
+  const bot_token = pickNonEmptyString(root, ["bot_token", "botToken"]);
+  const ilink_bot_id = pickNonEmptyString(root, ["ilink_bot_id", "ilinkBotId"]);
+  const baseurl = pickNonEmptyString(root, ["baseurl", "baseUrl"]);
+  const ilink_user_id = pickNonEmptyString(root, ["ilink_user_id", "ilinkUserId"]);
+  const redirect_host = pickNonEmptyString(root, ["redirect_host", "redirectHost"]);
+  return {
+    status,
+    ...(bot_token ? { bot_token } : {}),
+    ...(ilink_bot_id ? { ilink_bot_id } : {}),
+    ...(baseurl ? { baseurl } : {}),
+    ...(ilink_user_id ? { ilink_user_id } : {}),
+    ...(redirect_host ? { redirect_host } : {}),
+  };
+}
+
+export function resolveQQBotQrLoginFromConfig(cfg: OpenClawConfig): QQQrResolved | null {
   const qq = cfg.channels?.qqbot as { qrLogin?: QQBotQrLoginConfig } | undefined;
   const q = qq?.qrLogin;
   if (!q?.botType?.trim()) {
@@ -59,6 +163,7 @@ export function resolveQQBotQrLoginFromConfig(
     botType: q.botType.trim(),
     baseUrl,
     writeToAccountKey: q.writeToAccountKey?.trim() || "default",
+    skRouteTag: q.skRouteTag?.trim() || "1001",
   };
 }
 
@@ -98,6 +203,7 @@ async function apiGetFetch(params: {
   endpoint: string;
   timeoutMs?: number;
   label: string;
+  skRouteTag: string;
 }): Promise<string> {
   const url = `${params.baseUrl.replace(/\/+$/, "")}/${params.endpoint.replace(/^\/+/, "")}`;
   const controller = new AbortController();
@@ -108,7 +214,7 @@ async function apiGetFetch(params: {
   try {
     const res = await fetch(url, {
       signal: controller.signal,
-      headers: { ...ILINK_HTTP_HEADERS },
+      headers: buildIlinkFetchHeaders(params.skRouteTag),
     });
     if (!res.ok) {
       throw new Error(`${params.label}: HTTP ${res.status}`);
@@ -119,24 +225,34 @@ async function apiGetFetch(params: {
   }
 }
 
-async function fetchQRCode(apiBaseUrl: string, botType: string): Promise<QRCodeResponse> {
+async function fetchQRCode(
+  apiBaseUrl: string,
+  botType: string,
+  skRouteTag: string,
+): Promise<QRCodeResponse> {
   const rawText = await apiGetFetch({
     baseUrl: apiBaseUrl,
     endpoint: `ilink/bot/get_bot_qrcode?bot_type=${encodeURIComponent(botType)}`,
     label: "qqbot.fetchQRCode",
+    skRouteTag,
   });
-  return JSON.parse(rawText) as QRCodeResponse;
+  return parseQrFetchBody(rawText);
 }
 
-async function pollQRStatus(apiBaseUrl: string, qrcode: string): Promise<StatusResponse> {
+async function pollQRStatus(
+  apiBaseUrl: string,
+  qrcode: string,
+  skRouteTag: string,
+): Promise<StatusResponse> {
   try {
     const rawText = await apiGetFetch({
       baseUrl: apiBaseUrl,
       endpoint: `ilink/bot/get_qrcode_status?qrcode=${encodeURIComponent(qrcode)}`,
       timeoutMs: QR_LONG_POLL_TIMEOUT_MS,
       label: "qqbot.pollQRStatus",
+      skRouteTag,
     });
-    return JSON.parse(rawText) as StatusResponse;
+    return parseStatusFetchBody(rawText);
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
       return { status: "wait" };
@@ -196,7 +312,21 @@ export async function startQQBotLoginWithQr(params: {
 
   try {
     const initialBase = qrCfg.baseUrl;
-    const qrResponse = await fetchQRCode(initialBase, qrCfg.botType);
+    const qrResponse = await fetchQRCode(initialBase, qrCfg.botType, qrCfg.skRouteTag);
+    if (!qrResponse.qrcode) {
+      return {
+        message:
+          "ilink 未返回二维码令牌（qrcode）。请核对 channels.qqbot.qrLogin.botType、baseUrl，必要时设置 skRouteTag。",
+        sessionKey,
+      };
+    }
+    if (!qrResponse.qrcode_img_content) {
+      return {
+        message:
+          "ilink 未返回二维码展示链接或图片字段（如 qrcode_img_content）。请核对接入环境与 botType，或在 qrLogin 中配置 skRouteTag。",
+        sessionKey,
+      };
+    }
     const login: ActiveLogin = {
       sessionKey,
       id: randomUUID(),
@@ -256,7 +386,11 @@ export async function waitForQQBotLogin(params: {
   while (Date.now() < deadline) {
     try {
       const currentBaseUrl = activeLogin.currentApiBaseUrl ?? qrCfg.baseUrl;
-      const statusResponse = await pollQRStatus(currentBaseUrl, activeLogin.qrcode);
+      const statusResponse = await pollQRStatus(
+        currentBaseUrl,
+        activeLogin.qrcode,
+        qrCfg.skRouteTag,
+      );
       activeLogin.status = statusResponse.status;
 
       switch (statusResponse.status) {
@@ -281,9 +415,9 @@ export async function waitForQQBotLogin(params: {
             };
           }
           try {
-            const qrResponse = await fetchQRCode(qrCfg.baseUrl, activeLogin.botType);
+            const qrResponse = await fetchQRCode(qrCfg.baseUrl, activeLogin.botType, qrCfg.skRouteTag);
             activeLogin.qrcode = qrResponse.qrcode;
-            activeLogin.qrcodeUrl = qrResponse.qrcode_img_content;
+            activeLogin.qrcodeUrl = qrResponse.qrcode_img_content || activeLogin.qrcodeUrl;
             activeLogin.startedAt = Date.now();
             scannedPrinted = false;
           } catch (refreshErr) {

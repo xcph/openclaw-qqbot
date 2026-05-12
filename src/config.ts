@@ -76,6 +76,11 @@ export type QQBotQrLoginConfig = {
   botType: string;
   /** 未传 RPC accountId 时写入 `channels.qqbot` / `accounts.<key>`（默认 `default`）。 */
   writeToAccountKey?: string;
+  /**
+   * ilink 可选路由头 `SKRouteTag`（协议示例常用 `1001`）。
+   * 若轮询持续返回 expired 或缺少二维码展示字段，可尝试显式配置。
+   */
+  skRouteTag?: string;
 };
 
 interface QQBotChannelConfig extends QQBotAccountConfig {
