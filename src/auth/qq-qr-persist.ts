@@ -15,7 +15,7 @@ export async function persistQQBotQrCredentials(params: {
     appId: params.appId,
     clientSecret: params.clientSecret,
   });
-  await writeConfigFile(next as OpenClawConfig);
+  await writeConfigFile(next as Parameters<typeof writeConfigFile>[0]);
 }
 
 export function resolveQQBotQrWriteAccountKey(params: {

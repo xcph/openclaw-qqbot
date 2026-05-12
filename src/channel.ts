@@ -331,7 +331,12 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
   },
   gatewayMethods: ["qqbot-web.login.start", "qqbot-web.login.wait"],
   gateway: {
-    loginWithQrStart: async (params) => {
+    loginWithQrStart: async (params: {
+      accountId?: string;
+      force?: boolean;
+      timeoutMs?: number;
+      verbose?: boolean;
+    }) => {
       const { loadConfig } = await import("openclaw/plugin-sdk/config-runtime");
       const cfg = loadConfig();
       const { startQQBotLoginWithQr } = await import("./auth/qq-login-qr.js");
@@ -348,13 +353,13 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
         connected: r.connected,
       };
     },
-    loginWithQrWait: async (params) => {
-      const p = params as {
-        accountId?: string;
-        timeoutMs?: number;
-        sessionKey?: string;
-        currentQrDataUrl?: string;
-      };
+    loginWithQrWait: async (params: {
+      accountId?: string;
+      timeoutMs?: number;
+      sessionKey?: string;
+      currentQrDataUrl?: string;
+    }) => {
+      const p = params;
       const { loadConfig } = await import("openclaw/plugin-sdk/config-runtime");
       const cfg = loadConfig();
       const { waitForQQBotLogin } = await import("./auth/qq-login-qr.js");
