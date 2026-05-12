@@ -68,8 +68,19 @@ function evaluateMatchedGroupAccessForPolicy(params: {
   return { allowed: true, groupPolicy: params.groupPolicy, reason: "allowed" };
 }
 
+/** channels.qqbot.qrLogin — ilink 扫码绑定（qqbot-web.login.*）。 */
+export type QQBotQrLoginConfig = {
+  /** HTTPS origin for ilink QR APIs（默认全国链路）。 */
+  baseUrl?: string;
+  /** ilink `bot_type` 查询参数。 */
+  botType: string;
+  /** 未传 RPC accountId 时写入 `channels.qqbot` / `accounts.<key>`（默认 `default`）。 */
+  writeToAccountKey?: string;
+};
+
 interface QQBotChannelConfig extends QQBotAccountConfig {
   accounts?: Record<string, QQBotAccountConfig>;
+  qrLogin?: QQBotQrLoginConfig;
 }
 
 // ============ 群消息策略 ============

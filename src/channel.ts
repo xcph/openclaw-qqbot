@@ -329,7 +329,81 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
       };
     },
   },
+  gatewayMethods: ["qqbot-web.login.start", "qqbot-web.login.wait"],
   gateway: {
+    loginWithQrStart: async (params) => {
+      const { loadConfig } = await import("openclaw/plugin-sdk/config-runtime");
+      const cfg = loadConfig();
+      const { startQQBotLoginWithQr } = await import("./auth/qq-login-qr.js");
+      const r = await startQQBotLoginWithQr({
+        cfg,
+        accountId: params.accountId,
+        force: params.force,
+        verbose: params.verbose,
+      });
+      return {
+        qrDataUrl: r.qrDataUrl,
+        message: r.message,
+        sessionKey: r.sessionKey,
+        connected: r.connected,
+      };
+    },
+    loginWithQrWait: async (params) => {
+      const p = params as {
+        accountId?: string;
+        timeoutMs?: number;
+        sessionKey?: string;
+        currentQrDataUrl?: string;
+      };
+      const { loadConfig } = await import("openclaw/plugin-sdk/config-runtime");
+      const cfg = loadConfig();
+      const { waitForQQBotLogin } = await import("./auth/qq-login-qr.js");
+      const { persistQQBotQrCredentials, resolveQQBotQrWriteAccountKey } = await import(
+        "./auth/qq-qr-persist.js"
+      );
+      const sessionKey =
+        (typeof p.sessionKey === "string" && p.sessionKey.trim()) ||
+        (typeof p.accountId === "string" && p.accountId.trim()) ||
+        "";
+      if (!sessionKey) {
+        return {
+          connected: false,
+          message: "缺少 sessionKey：请先调用 qqbot-web.login.start。",
+        };
+      }
+      const result = await waitForQQBotLogin({
+        cfg,
+        sessionKey,
+        timeoutMs: p.timeoutMs,
+      });
+      if (result.connected && result.botToken && result.ilinkBotId) {
+        const writeKey = resolveQQBotQrWriteAccountKey({
+          cfg,
+          gatewayAccountId: p.accountId,
+        });
+        try {
+          await persistQQBotQrCredentials({
+            writeToAccountKey: writeKey,
+            appId: result.ilinkBotId,
+            clientSecret: result.botToken,
+          });
+        } catch (err) {
+          return {
+            connected: false,
+            message: `扫码成功但写入 openclaw.json 失败：${String(err)}`,
+          };
+        }
+        return {
+          connected: true,
+          message: result.message,
+          accountId: writeKey,
+        };
+      }
+      return {
+        connected: result.connected,
+        message: result.message,
+      };
+    },
     startAccount: async (ctx) => {
       let { account } = ctx;
       const { abortSignal, log, cfg } = ctx;
