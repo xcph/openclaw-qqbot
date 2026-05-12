@@ -34,6 +34,30 @@ function unwrapIlinkJsonRoot(parsed: unknown): Record<string, unknown> {
   return o;
 }
 
+const QR_RAW_HINT_MAX = 480;
+
+/** 递归收集 JSON 对象节点，用于兼容多层 data/result/payload 包裹。 */
+function collectRecordRoots(parsed: unknown, maxDepth = 5): Record<string, unknown>[] {
+  const roots: Record<string, unknown>[] = [];
+  const visited = new WeakSet<object>();
+  const walk = (node: unknown, depth: number) => {
+    if (depth > maxDepth || node === null || typeof node !== "object") return;
+    if (visited.has(node as object)) return;
+    visited.add(node as object);
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item, depth + 1);
+      return;
+    }
+    const o = node as Record<string, unknown>;
+    roots.push(o);
+    for (const k of ["data", "result", "payload", "body", "info"]) {
+      if (k in o) walk(o[k], depth + 1);
+    }
+  };
+  walk(parsed, 0);
+  return roots;
+}
+
 function pickNonEmptyString(root: Record<string, unknown>, keys: string[]): string {
   for (const k of keys) {
     const v = root[k];
@@ -42,6 +66,42 @@ function pickNonEmptyString(root: Record<string, unknown>, keys: string[]): stri
     }
   }
   return "";
+}
+
+/** 允许字符串或数字形式的二维码令牌（少数网关返回数值）。 */
+function pickStringish(root: Record<string, unknown>, keys: string[]): string {
+  for (const k of keys) {
+    const v = root[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+    if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  }
+  return "";
+}
+
+function summarizeIlinkBizError(parsed: unknown): string | null {
+  const roots = collectRecordRoots(parsed, 4);
+  const parts: string[] = [];
+  for (const r of roots) {
+    const br = r.base_resp;
+    if (br && typeof br === "object" && !Array.isArray(br)) {
+      const b = br as Record<string, unknown>;
+      const ret = b.ret ?? b.errcode ?? b.code;
+      const bm = pickStringish(b, ["err_msg", "errmsg", "message", "msg"]);
+      if (bm || ret !== undefined) {
+        parts.push(`base_resp(${String(ret ?? "?")}) ${bm}`.trim());
+      }
+    }
+    const code = pickStringish(r, ["errcode", "err_code", "code", "ret", "errno"]);
+    const msg = pickStringish(r, ["errmsg", "err_msg", "message", "msg", "error_msg", "error", "hint"]);
+    if (code || msg) parts.push([code && `code=${code}`, msg].filter(Boolean).join(" "));
+  }
+  const uniq = [...new Set(parts.map((p) => p.trim()).filter(Boolean))];
+  return uniq.length ? uniq.slice(0, 4).join(" | ") : null;
+}
+
+function rawResponseHint(rawText: string): string {
+  const t = rawText.trim().replace(/\s+/g, " ");
+  return t.length <= QR_RAW_HINT_MAX ? t : `${t.slice(0, QR_RAW_HINT_MAX)}…`;
 }
 
 function coerceQrDisplayUrl(raw: string): string {
@@ -92,21 +152,41 @@ function parseQrFetchBody(rawText: string): QRCodeResponse {
   try {
     parsed = JSON.parse(rawText) as unknown;
   } catch {
-    throw new Error("ilink get_bot_qrcode 返回非 JSON");
+    throw new Error(`ilink get_bot_qrcode 返回非 JSON。摘要：${rawResponseHint(rawText)}`);
   }
-  const root = unwrapIlinkJsonRoot(parsed);
-  const qrcode = pickNonEmptyString(root, ["qrcode", "qr_code", "qrCode", "QrCode"]);
-  const imgRaw = pickNonEmptyString(root, [
+  const roots = collectRecordRoots(parsed);
+  const qrKeys = ["qrcode", "qr_code", "qrCode", "QrCode", "qr_token", "qrToken"];
+  const imgKeys = [
     "qrcode_img_content",
     "qrcodeImgContent",
     "qrcode_url",
     "qrcodeUrl",
+    "qrcode_image_url",
     "img_content",
     "image_url",
     "imageUrl",
     "qr_url",
     "url",
-  ]);
+  ];
+  let qrcode = "";
+  let imgRaw = "";
+  for (const root of roots) {
+    const q = pickStringish(root, qrKeys);
+    if (q) {
+      qrcode = q;
+      imgRaw = pickStringish(root, imgKeys);
+      break;
+    }
+  }
+  if (!qrcode) {
+    const biz = summarizeIlinkBizError(parsed);
+    const hint = rawResponseHint(rawText);
+    throw new Error(
+      biz
+        ? `ilink get_bot_qrcode 未解析出 qrcode。服务端：${biz}。摘要：${hint}`
+        : `ilink get_bot_qrcode 响应中无 qrcode。请核对 botType/baseUrl/skRouteTag（QQ 机器人 ilink 文档中的 bot_type）。摘要：${hint}`,
+    );
+  }
   const qrcode_img_content = coerceQrDisplayUrl(imgRaw);
   return { qrcode, qrcode_img_content };
 }
@@ -313,13 +393,6 @@ export async function startQQBotLoginWithQr(params: {
   try {
     const initialBase = qrCfg.baseUrl;
     const qrResponse = await fetchQRCode(initialBase, qrCfg.botType, qrCfg.skRouteTag);
-    if (!qrResponse.qrcode) {
-      return {
-        message:
-          "ilink 未返回二维码令牌（qrcode）。请核对 channels.qqbot.qrLogin.botType、baseUrl，必要时设置 skRouteTag。",
-        sessionKey,
-      };
-    }
     if (!qrResponse.qrcode_img_content) {
       return {
         message:
