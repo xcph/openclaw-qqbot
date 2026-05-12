@@ -1,14 +1,17 @@
 /**
- * `@tencent-connect/qqbot-connector` 的 package.json `exports` 仅暴露根入口，
- * 无法 `import ".../qqbot-session.js"`。官方 CLI 内部与此同源；此处用包根路径定位文件 URL 加载。
+ * `@tencent-connect/qqbot-connector` 的 `exports` 仅暴露根入口，
+ * 无法 `import ".../qqbot-session.js"`。通过 `require.resolve` 主入口得到目录，
+ * 再加载同级的 `qqbot-session.js`（勿解析未导出的 `package.json`）。
  */
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const require = createRequire(import.meta.url);
-const pkgRoot = dirname(require.resolve("@tencent-connect/qqbot-connector/package.json"));
-const sessionHref = pathToFileURL(join(pkgRoot, "dist/esm/qqbot-session.js")).href;
+/** 勿 resolve `package.json`（未列入 exports）；主入口与 qqbot-session 同目录（esm 或 cjs）。 */
+const connectorMain = require.resolve("@tencent-connect/qqbot-connector");
+const connectorDir = dirname(connectorMain);
+const sessionHref = pathToFileURL(join(connectorDir, "qqbot-session.js")).href;
 
 export type QQBotSessionModule = {
   BindStatus: {
