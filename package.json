@@ -43,6 +43,7 @@
     "postinstall": "node scripts/postinstall-link-sdk.js 2>/dev/null || true"
   },
   "dependencies": {
+    "@tencent-connect/qqbot-connector": "^1.1.0",
     "mpg123-decoder": "^1.0.3",
     "node-addon-api": "^8.3.0",
     "node-gyp": "^11.2.0",

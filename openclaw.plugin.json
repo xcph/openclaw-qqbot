@@ -64,7 +64,23 @@
           "streaming": { "type": "boolean" },
           "accounts": { "type": "object", "additionalProperties": true },
           "stt": { "type": "object", "additionalProperties": true },
-          "tts": { "type": "object", "additionalProperties": true }
+          "tts": { "type": "object", "additionalProperties": true },
+          "qrLogin": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "writeToAccountKey": { "type": "string" },
+              "connectorSource": {
+                "type": "string",
+                "description": "与官方 CLI qrConnect source 一致，默认 openclaw"
+              },
+              "qqBotEnv": {
+                "type": "string",
+                "enum": ["production", "test"],
+                "description": "production=q.qq.com API；test=test.q.qq.com"
+              }
+            }
+          }
         },
         "required": []
       },

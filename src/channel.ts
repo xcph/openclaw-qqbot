@@ -381,7 +381,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
         sessionKey,
         timeoutMs: p.timeoutMs,
       });
-      if (result.connected && result.botToken && result.ilinkBotId) {
+      if (result.connected && result.botToken && result.botAppId) {
         const writeKey = resolveQQBotQrWriteAccountKey({
           cfg,
           gatewayAccountId: p.accountId,
@@ -389,7 +389,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
         try {
           await persistQQBotQrCredentials({
             writeToAccountKey: writeKey,
-            appId: result.ilinkBotId,
+            appId: result.botAppId,
             clientSecret: result.botToken,
           });
         } catch (err) {

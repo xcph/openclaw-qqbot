@@ -68,19 +68,20 @@ function evaluateMatchedGroupAccessForPolicy(params: {
   return { allowed: true, groupPolicy: params.groupPolicy, reason: "allowed" };
 }
 
-/** channels.qqbot.qrLogin — ilink 扫码绑定（qqbot-web.login.*）。 */
+/**
+ * channels.qqbot.qrLogin — 网关 qqbot-web.login.*（Flutter `/qq-login`）。
+ * 实现与官方 CLI `openclaw channels add --channel qqbot` 扫码同源：
+ * `@tencent-connect/qqbot-connector` 的 q.qq.com create_bind_task / poll_bind_result。
+ */
 export type QQBotQrLoginConfig = {
-  /** HTTPS origin for ilink QR APIs（默认全国链路）。 */
-  baseUrl?: string;
-  /** ilink `bot_type` 查询参数。 */
-  botType: string;
   /** 未传 RPC accountId 时写入 `channels.qqbot` / `accounts.<key>`（默认 `default`）。 */
   writeToAccountKey?: string;
   /**
-   * ilink 可选路由头 `SKRouteTag`（协议示例常用 `1001`）。
-   * 若轮询持续返回 expired 或缺少二维码展示字段，可尝试显式配置。
+   * 传给 buildConnectUrl / bind-task 的平台标识；官方 CLI 使用 `"openclaw"`。
    */
-  skRouteTag?: string;
+  connectorSource?: string;
+  /** production → q.qq.com；test → test.q.qq.com（connector README） */
+  qqBotEnv?: "production" | "test";
 };
 
 interface QQBotChannelConfig extends QQBotAccountConfig {
