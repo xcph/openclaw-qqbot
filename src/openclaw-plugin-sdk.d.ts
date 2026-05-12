@@ -690,6 +690,13 @@ declare module "openclaw/plugin-sdk/core" {
   export * from "openclaw/plugin-sdk";
 }
 
+declare module "openclaw/plugin-sdk/config-runtime" {
+  import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
+
+  export function loadConfig(): OpenClawConfig;
+  export function writeConfigFile(cfg: OpenClawConfig): Promise<void>;
+}
+
 declare module "openclaw/plugin-sdk/gateway-runtime" {
   export interface EventFrame {
     event: string;
